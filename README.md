@@ -105,8 +105,13 @@ recall watches PipeWire for applications that open the microphone.
   those probes end within the 8 seconds and are dropped.
 - The recording ends once every allowlisted app has closed the mic for 30
   seconds, so a reconnect does not split a meeting in two.
-- Recordings shorter than 2 minutes are deleted, including ones stopped with
-  `recall stop`.
+- Detected recordings shorter than 2 minutes are deleted. A recording started
+  with `recall start` is kept whatever its length.
+- If the capture cannot start, a notification says so and recall tries again
+  every 10 seconds while the app keeps the mic open.
+- A notification warns when the meetings folder has less than 2 GB free at
+  the start of a recording. If the disk fills up, the recording stops and
+  keeps what was written; saving it is retried every minute.
 - One meeting records at a time; a second app joining the mic joins the
   current recording.
 - Audio is written to disk every 20 seconds. After a crash the daemon finishes
@@ -169,7 +174,7 @@ record_screen = false                  # not used yet
 allowlist = ["brave", "chromium", "chrome", "firefox", "zoom", "slack", "discord", "teams"]
 debounce_secs = 8                      # mic must stay open this long to record
 end_grace_secs = 30                    # mic closed this long ends the recording
-min_length_secs = 120                  # shorter recordings are deleted
+min_length_secs = 120                  # shorter detected recordings are deleted
 summary_lang = "zh-TW"                 # "zh-TW" or "en"
 # ui_lang = "en"                       # unset: follow the browser
 port = 7474

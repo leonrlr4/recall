@@ -25,8 +25,16 @@ pub enum DetectEvent {
     HotkeyStart,
     HotkeyStop,
     HotkeyDiscard,
+    /// The capture that `StartCache` or `StartRecording` asked for did not
+    /// start. The session drops back to idle; allowlisted apps still holding
+    /// the mic arm again [`CAPTURE_RETRY_DELAY`] later.
+    CaptureFailed,
     Tick(Instant),
 }
+
+/// How long after a failed capture start the session arms again while an
+/// allowlisted app still holds the mic.
+pub const CAPTURE_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {
@@ -53,9 +61,11 @@ pub enum Phase {
 pub enum Action {
     /// Start capturing into a cache that may still be discarded.
     StartCache,
-    /// Keep the cached audio and continue it as a recording.
+    /// Keep the cached audio and continue it as a recording. `by_hotkey`
+    /// is set when the user started it by hand rather than the debounce.
     StartRecording {
         source_app: String,
+        by_hotkey: bool,
     },
     /// Stop and keep the recording.
     Finish,
@@ -78,6 +88,9 @@ pub struct Session {
     /// The last tick seen, `None` until the first tick. A `HotkeyStart` before
     /// then is ignored; mic users seen before then arm on the first tick.
     now: Option<Instant>,
+    /// After [`DetectEvent::CaptureFailed`]: the earliest tick that arms
+    /// again for the users still in `pending`.
+    retry_at: Option<Instant>,
 }
 
 impl Session {
@@ -89,6 +102,7 @@ impl Session {
             grace,
             pending: Vec::new(),
             now: None,
+            retry_at: None,
         }
     }
 
@@ -109,7 +123,13 @@ impl Session {
                 Phase::Idle => Action::None,
                 _ => self.reset(Action::Discard),
             },
+            DetectEvent::CaptureFailed => self.capture_failed(),
         }
+    }
+
+    /// The binary of the first allowlisted app waiting to be recorded.
+    pub fn pending_app(&self) -> Option<&str> {
+        self.pending.first().map(|u| u.binary.as_str())
     }
 
     pub fn phase(&self) -> &Phase {
@@ -119,12 +139,15 @@ impl Session {
     fn tick(&mut self, t: Instant) -> Action {
         self.now = Some(t);
         match self.phase {
-            Phase::Idle if !self.pending.is_empty() => {
+            Phase::Idle
+                if !self.pending.is_empty() && self.retry_at.is_none_or(|retry| t >= retry) =>
+            {
+                self.retry_at = None;
                 self.phase = Phase::Armed { since: t };
                 Action::StartCache
             }
             Phase::Armed { since } if t.duration_since(since) >= self.debounce => {
-                self.start_recording(since)
+                self.start_recording(since, false)
             }
             Phase::Recording {
                 closed_at: Some(closed),
@@ -146,7 +169,10 @@ impl Session {
                     self.pending.push(user);
                     return Action::None;
                 };
-                self.pending = vec![user];
+                // A new app opening the mic arms at once, even while a failed
+                // start waits to retry.
+                self.pending.push(user);
+                self.retry_at = None;
                 self.phase = Phase::Armed { since: now };
                 Action::StartCache
             }
@@ -190,10 +216,10 @@ impl Session {
     fn hotkey_start(&mut self) -> Action {
         match self.phase {
             Phase::Idle => match self.now {
-                Some(now) => self.start_recording(now),
+                Some(now) => self.start_recording(now, true),
                 None => Action::None,
             },
-            Phase::Armed { since } => self.start_recording(since),
+            Phase::Armed { since } => self.start_recording(since, true),
             // Asking to record during the grace period keeps the recording.
             Phase::Recording {
                 ref mut closed_at, ..
@@ -205,7 +231,7 @@ impl Session {
     }
 
     /// Moves the pending users into a recording that began at `since`.
-    fn start_recording(&mut self, since: Instant) -> Action {
+    fn start_recording(&mut self, since: Instant, by_hotkey: bool) -> Action {
         let users = std::mem::take(&mut self.pending);
         let source_app = users
             .first()
@@ -215,12 +241,28 @@ impl Session {
             users,
             closed_at: None,
         };
-        Action::StartRecording { source_app }
+        Action::StartRecording {
+            source_app,
+            by_hotkey,
+        }
+    }
+
+    /// Back to idle after a capture failed to start, keeping the allowlisted
+    /// users that still hold the mic so the next tick after the retry delay
+    /// arms again. A user closing the mic meanwhile leaves `pending` as
+    /// usual, so nothing retries once they are all gone.
+    fn capture_failed(&mut self) -> Action {
+        if let Phase::Recording { users, .. } = std::mem::replace(&mut self.phase, Phase::Idle) {
+            self.pending.extend(users);
+        }
+        self.retry_at = self.now.map(|now| now + CAPTURE_RETRY_DELAY);
+        Action::None
     }
 
     fn reset(&mut self, action: Action) -> Action {
         self.phase = Phase::Idle;
         self.pending.clear();
+        self.retry_at = None;
         action
     }
 
@@ -289,7 +331,8 @@ mod tests {
         assert_eq!(
             s.handle(DetectEvent::Tick(t0 + secs(9))),
             Action::StartRecording {
-                source_app: "brave".into()
+                source_app: "brave".into(),
+                by_hotkey: false,
             }
         );
         assert_eq!(
@@ -443,7 +486,8 @@ mod tests {
         assert_eq!(
             s.handle(DetectEvent::HotkeyStart),
             Action::StartRecording {
-                source_app: "hotkey".into()
+                source_app: "hotkey".into(),
+                by_hotkey: true,
             }
         );
         assert_eq!(
@@ -470,7 +514,8 @@ mod tests {
         assert_eq!(
             s.handle(DetectEvent::HotkeyStart),
             Action::StartRecording {
-                source_app: "brave".into()
+                source_app: "brave".into(),
+                by_hotkey: true,
             }
         );
         assert_eq!(
@@ -522,7 +567,8 @@ mod tests {
         assert_eq!(
             s.handle(DetectEvent::Tick(t0 + secs(9))),
             Action::StartRecording {
-                source_app: "brave".into()
+                source_app: "brave".into(),
+                by_hotkey: false,
             }
         );
         assert_eq!(
@@ -552,5 +598,50 @@ mod tests {
         ));
         assert_eq!(s.handle(DetectEvent::Tick(closed + secs(31))), Action::None);
         assert_eq!(s.handle(DetectEvent::HotkeyStop), Action::Finish);
+    }
+
+    #[test]
+    fn failed_capture_start_retries_while_the_app_holds_the_mic() {
+        let t0 = Instant::now();
+        let mut s = session();
+        s.handle(DetectEvent::Tick(t0));
+        assert_eq!(
+            s.handle(DetectEvent::MicOpened(brave())),
+            Action::StartCache
+        );
+        assert_eq!(s.handle(DetectEvent::CaptureFailed), Action::None);
+        assert_eq!(s.phase(), &Phase::Idle);
+        assert_eq!(s.pending_app(), Some("brave"));
+        // Nothing until the retry delay has passed.
+        assert_eq!(s.handle(DetectEvent::Tick(t0 + secs(1))), Action::None);
+        assert_eq!(s.handle(DetectEvent::Tick(t0 + secs(9))), Action::None);
+        assert_eq!(
+            s.handle(DetectEvent::Tick(t0 + CAPTURE_RETRY_DELAY)),
+            Action::StartCache
+        );
+        assert_eq!(
+            s.phase(),
+            &Phase::Armed {
+                since: t0 + CAPTURE_RETRY_DELAY
+            }
+        );
+
+        // A second failure retries again; the app closing the mic stops it.
+        s.handle(DetectEvent::CaptureFailed);
+        s.handle(DetectEvent::Tick(t0 + secs(15)));
+        assert_eq!(s.handle(DetectEvent::MicClosed(1)), Action::None);
+        assert_eq!(s.handle(DetectEvent::Tick(t0 + secs(60))), Action::None);
+        assert_eq!(s.phase(), &Phase::Idle);
+    }
+
+    #[test]
+    fn failed_hotkey_start_does_not_retry() {
+        let t0 = Instant::now();
+        let mut s = session();
+        s.handle(DetectEvent::Tick(t0));
+        s.handle(DetectEvent::HotkeyStart);
+        assert_eq!(s.handle(DetectEvent::CaptureFailed), Action::None);
+        assert_eq!(s.phase(), &Phase::Idle);
+        assert_eq!(s.handle(DetectEvent::Tick(t0 + secs(60))), Action::None);
     }
 }

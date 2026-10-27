@@ -32,10 +32,20 @@ pub fn summary_ready(title: &str, url: &str) {
     show("Summary ready", title, Some(url.to_owned()));
 }
 
-pub fn failed(title: &str, step: &str) {
+/// `what` failed for `title` (a meeting title, or the app being recorded).
+pub fn failed(title: &str, what: &str) {
+    show("recall failed", &format!("{title}: {what} failed"), None);
+}
+
+/// Shown when a recording starts with little free space in `dir`.
+pub fn low_space(dir: &Path, free_bytes: u64) {
     show(
-        "Processing failed",
-        &format!("{title}: {step} failed"),
+        "Low disk space",
+        &format!(
+            "{:.1} GB free in {}; recording stops when the disk is full",
+            free_bytes as f64 / 1e9,
+            dir.display()
+        ),
         None,
     );
 }

@@ -185,7 +185,7 @@
     "end_grace_secs": "結束緩衝（秒）",
     "end_grace_secs_help": "麥克風釋放後再繼續錄多久。",
     "min_length_secs": "最短長度（秒）",
-    "min_length_secs_help": "比這短的錄音會直接捨棄。",
+    "min_length_secs_help": "自動偵測的錄音比這短會直接捨棄；手動開始的錄音一律保留。",
     "stt_engine": "語音辨識引擎",
     "stt_engine_help": "把語音轉成文字的本機模型。",
     "stt_threads": "CPU 執行緒",

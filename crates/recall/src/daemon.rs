@@ -3,9 +3,10 @@
 //!
 //! The recorder runs on a plain thread, not a tokio task: it owns the
 //! detector and the capture, whose PipeWire objects stay on their own
-//! threads, and it blocks while encoding a finished recording. Everything
-//! else talks to it by sending [`DetectEvent`]s into its channel and reads
-//! its [`StatusSnapshot`].
+//! threads. Finished recordings are encoded on threads of their own (see
+//! [`Recorder::poll_keeps`]), which shutdown waits for. Everything else
+//! talks to the recorder by sending [`DetectEvent`]s into its channel and
+//! reads its [`StatusSnapshot`].
 //!
 //! The worker is another plain thread (see [`crate::worker`]). It is never
 //! joined: stopping the daemon does not wait for a transcription that can
@@ -73,6 +74,15 @@ pub async fn run(config: Config) -> Result<()> {
         tracing::info!(count = swept.len(), "marked interrupted runs failed");
     }
     index.reset_running_jobs()?;
+    // Folders deleted, renamed or copied in by hand since the last run.
+    match index.rebuild(&config.meetings_dir, &speakers) {
+        Ok(report) => {
+            for (id, err) in &report.failed {
+                tracing::warn!(id = id.0, err, "left out of the index");
+            }
+        }
+        Err(err) => tracing::warn!(err = format!("{err:#}"), "rebuilding the index"),
+    }
     let recovered = Recorder::recover(&config, &index, &speakers)?;
     if !recovered.is_empty() {
         tracing::info!(count = recovered.len(), "queued recovered recordings");
@@ -289,8 +299,10 @@ fn recorder_loop(
                 events,
                 DetectEvent::Tick(now),
             );
+            recorder.poll_keeps(now);
             if recorder.capture_failed() {
                 tracing::error!("the capture stopped on its own; ending the recording");
+                notify::failed(recorder.source_app().unwrap_or("recall"), "recording audio");
                 step(
                     &mut session,
                     &mut recorder,
@@ -314,10 +326,13 @@ fn recorder_loop(
         }
         Phase::Idle => {}
     }
+    recorder.wait_keeps();
     failure.map_or(Ok(()), Err)
 }
 
-/// Hands `event` to the session and carries out the resulting action.
+/// Hands `event` to the session and carries out the resulting action. A
+/// capture that fails to start is notified, and the session retries it
+/// while an allowlisted app still holds the mic.
 fn step(
     session: &mut Session,
     recorder: &mut Recorder,
@@ -326,16 +341,27 @@ fn step(
     event: DetectEvent,
 ) {
     let action = session.handle(event);
-    let starting = matches!(action, Action::StartCache | Action::StartRecording { .. });
+    let app = match &action {
+        Action::StartRecording { source_app, .. } => Some(source_app.clone()),
+        Action::StartCache => Some(session.pending_app().unwrap_or("the microphone").to_owned()),
+        _ => None,
+    };
     if action == Action::Finish {
         reporter.finishing();
     }
-    if !apply(recorder, events, action) && starting {
+    if !apply(recorder, events, action)
+        && let Some(app) = app
+    {
         // No capture is running, so drop back to idle rather than show a
-        // recording that is not happening. The app holding the mic arms a
-        // new attempt only when it opens the mic again.
-        let action = session.handle(DetectEvent::HotkeyDiscard);
-        apply(recorder, events, action);
+        // recording that is not happening. One notification per run of
+        // failures: the session retries every few seconds.
+        if !reporter.start_failed {
+            notify::failed(&app, "starting the recording");
+        }
+        reporter.start_failed = true;
+        session.handle(DetectEvent::CaptureFailed);
+    } else if recorder.is_capturing() {
+        reporter.start_failed = false;
     }
 }
 
@@ -345,7 +371,7 @@ fn step(
 fn apply(recorder: &mut Recorder, events: &broadcast::Sender<Event>, action: Action) -> bool {
     let name = format!("{action:?}");
     let event = match &action {
-        Action::StartRecording { source_app } => Some(Event::Recording {
+        Action::StartRecording { source_app, .. } => Some(Event::Recording {
             app: source_app.clone(),
         }),
         Action::Finish | Action::Discard => Some(Event::Stopped),
@@ -427,6 +453,9 @@ struct StatusReporter<'a> {
     status: &'a RwLock<StatusSnapshot>,
     state_path: std::path::PathBuf,
     last: StatusSnapshot,
+    /// Set once a failed capture start has been notified, until a capture
+    /// starts again.
+    start_failed: bool,
 }
 
 impl<'a> StatusReporter<'a> {
@@ -439,6 +468,7 @@ impl<'a> StatusReporter<'a> {
             status,
             state_path: notify::state_path(),
             last,
+            start_failed: false,
         };
         reporter.write_file();
         reporter
