@@ -1,0 +1,127 @@
+{
+  "nav": {
+    "label": "主選單",
+    "meetings": "會議",
+    "people": "人員",
+    "settings": "設定"
+  },
+  "status": {
+    "recording": "正在錄製 {app}"
+  },
+  "common": {
+    "loading": "載入中…",
+    "save": "儲存",
+    "cancel": "取消",
+    "back_to_list": "所有會議",
+    "not_found": "找不到這個頁面。",
+    "coming_soon": "這個頁面還沒做好。"
+  },
+  "keys": {
+    "title": "快速鍵",
+    "search": "搜尋",
+    "move": "下一個／上一個",
+    "open": "開啟",
+    "enter_key": "Enter",
+    "space_key": "空白鍵",
+    "meeting": "空白鍵 播放或暫停 · [ ] 上一行或下一行 · e 編輯這行 · s 換下一位講者"
+  },
+  "list": {
+    "title": "會議",
+    "results": "搜尋結果",
+    "count": "{n} 場會議",
+    "count_one": "1 場會議",
+    "search_placeholder": "搜尋標題與逐字稿",
+    "search_label": "搜尋會議",
+    "search_hint": "按 / 搜尋",
+    "filters": "篩選",
+    "filter_app": "應用程式",
+    "filter_participant": "與會者",
+    "filter_from": "起",
+    "filter_to": "迄",
+    "any": "全部應用程式",
+    "anyone": "所有人",
+    "clear_filters": "清除篩選",
+    "today": "今天",
+    "yesterday": "昨天",
+    "no_summary": "沒有摘要",
+    "no_results": "沒有符合條件的會議。",
+    "empty_title": "還沒有會議",
+    "empty_body": "會議軟體開始使用麥克風時，recall 會自動錄音。",
+    "load_failed": "無法載入會議：{error}"
+  },
+  "state": {
+    "recording": "錄音中",
+    "processing": "{step}…",
+    "processing_pct": "{step} {pct}%",
+    "failed": "{step}失敗",
+    "done": "完成"
+  },
+  "step": {
+    "segment": "切分語音",
+    "transcribe": "轉錄",
+    "diarize": "分辨講者",
+    "name": "辨識講者",
+    "summarize": "產生摘要",
+    "write": "寫入檔案"
+  },
+  "meeting": {
+    "untitled": "未命名會議",
+    "rename": "點一下即可重新命名",
+    "title_label": "會議標題",
+    "rerun": "重新處理",
+    "rerun_step": "從哪個步驟重新處理",
+    "rerun_queued": "已排入佇列：從「{step}」重新處理",
+    "rerun_failed": "無法重新處理：{error}",
+    "delete": "刪除",
+    "delete_confirm": "要刪除「{title}」以及它的錄音和逐字稿嗎？刪除後無法復原。",
+    "delete_failed": "無法刪除：{error}",
+    "save_failed": "無法儲存：{error}",
+    "load_failed": "無法載入這場會議：{error}"
+  },
+  "summary": {
+    "title": "摘要",
+    "decisions": "決議",
+    "actions": "待辦事項",
+    "chapters": "章節",
+    "due": "期限 {due}",
+    "pending": "處理完成後會顯示摘要。",
+    "none": "這場會議沒有摘要。"
+  },
+  "transcript": {
+    "title": "逐字稿",
+    "empty": "還沒有逐字稿。",
+    "play_from": "從這裡播放",
+    "edit": "編輯這行 (e)",
+    "edit_label": "這行的文字",
+    "edit_hint": "Enter 儲存，Esc 取消",
+    "next_speaker": "換下一位講者 (s)",
+    "delete": "刪除這行"
+  },
+  "speaker": {
+    "me": "我",
+    "them": "對方",
+    "unknown": "未知講者"
+  },
+  "player": {
+    "me": "我",
+    "them": "對方",
+    "waveform": "波形，點一下跳到該處",
+    "loading_waveform": "正在繪製波形…",
+    "jump_chapter": "跳到章節「{title}」"
+  },
+  "ask": {
+    "title": "問這場會議",
+    "intro": "問會議裡講過的內容，答案只根據這場會議的逐字稿。",
+    "placeholder": "預算最後怎麼決定？",
+    "send": "提問",
+    "stop": "停止",
+    "stopped": "（已停止）",
+    "failed": "無法取得回答，請確認語言模型正在執行。"
+  },
+  "people": {
+    "title": "人員"
+  },
+  "settings": {
+    "title": "設定"
+  }
+}

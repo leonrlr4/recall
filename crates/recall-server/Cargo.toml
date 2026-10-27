@@ -8,4 +8,22 @@ rust-version.workspace = true
 [dependencies]
 recall-store.workspace = true
 recall-llm.workspace = true
-recall-pipeline.workspace = true
+anyhow.workspace = true
+async-stream = "0.3"
+axum = { version = "0.8", features = ["json"] }
+chrono.workspace = true
+futures-util = "0.3"
+mime_guess = "2"
+rust-embed = "8"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml = "1"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+tracing.workspace = true
+
+[dev-dependencies]
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tempfile.workspace = true

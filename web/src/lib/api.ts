@@ -1,0 +1,179 @@
+import type {
+  Hit,
+  ListFilter,
+  Meeting,
+  MeetingDetail,
+  MeetingPatch,
+  MeetingRow,
+  Person,
+  RecallEvent,
+  Step,
+} from './types';
+
+const BASE = '/api';
+
+/** `GET /api/meetings` URL with only the filter fields that are set. */
+export function listUrl(filter: ListFilter): string {
+  const params = new URLSearchParams();
+  for (const key of ['q', 'app', 'participant', 'from', 'to'] as const) {
+    const v = filter[key];
+    if (v) params.set(key, v);
+  }
+  const qs = params.toString();
+  return qs ? `${BASE}/meetings?${qs}` : `${BASE}/meetings`;
+}
+
+/** Meeting ids are directory names with spaces and colons, so encode them. */
+export function meetingUrl(id: string): string {
+  return `${BASE}/meetings/${encodeURIComponent(id)}`;
+}
+
+export function audioUrl(id: string): string {
+  return `${meetingUrl(id)}/audio`;
+}
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(res.status, text || res.statusText);
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+function json(method: string, body: unknown): RequestInit {
+  return {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  };
+}
+
+/** Lists meetings; `hits` holds the transcript matches when `q` is set. */
+export async function listMeetings(
+  filter: ListFilter,
+): Promise<{ meetings: MeetingRow[]; hits: Hit[] }> {
+  const body = await request<{ meetings: MeetingRow[]; hits?: Hit[] }>(listUrl(filter));
+  return { meetings: body.meetings, hits: body.hits ?? [] };
+}
+
+export function getMeeting(id: string): Promise<MeetingDetail> {
+  return request(meetingUrl(id));
+}
+
+export function patchMeeting(id: string, body: MeetingPatch): Promise<Meeting> {
+  return request(meetingUrl(id), json('PATCH', body));
+}
+
+export function deleteMeeting(id: string): Promise<void> {
+  return request(meetingUrl(id), { method: 'DELETE' });
+}
+
+export function rerun(id: string, step: Step): Promise<{ job: number }> {
+  return request(`${meetingUrl(id)}/rerun/${step}`, { method: 'POST' });
+}
+
+export function people(): Promise<Person[]> {
+  return request(`${BASE}/people`);
+}
+
+export function patchPerson(
+  id: string,
+  body: { name?: string; merge_into?: string },
+): Promise<unknown> {
+  return request(`${BASE}/people/${encodeURIComponent(id)}`, json('PATCH', body));
+}
+
+export interface SseMessage {
+  event: string;
+  data: string;
+}
+
+/**
+ * Incremental parser for a `text/event-stream` body. `push` takes the next
+ * decoded chunk and returns the messages it completed.
+ */
+export function parseSse() {
+  let buf = '';
+  return {
+    push(chunk: string): SseMessage[] {
+      buf += chunk.replace(/\r\n?/g, '\n');
+      const out: SseMessage[] = [];
+      let end: number;
+      while ((end = buf.indexOf('\n\n')) !== -1) {
+        const block = buf.slice(0, end);
+        buf = buf.slice(end + 2);
+        let event = 'message';
+        const data: string[] = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith(':')) continue;
+          const colon = line.indexOf(':');
+          const field = colon === -1 ? line : line.slice(0, colon);
+          let value = colon === -1 ? '' : line.slice(colon + 1);
+          if (value.startsWith(' ')) value = value.slice(1);
+          if (field === 'event') event = value;
+          else if (field === 'data') data.push(value);
+        }
+        if (data.length > 0 || event !== 'message') out.push({ event, data: data.join('\n') });
+      }
+      return out;
+    },
+  };
+}
+
+/**
+ * Asks a question about a meeting and streams the answer. `EventSource`
+ * cannot POST, so the SSE body is read from `fetch` directly. Resolves when
+ * the server sends `event: done` or closes the stream; rejects with an
+ * `ApiError` carrying the message when it sends `event: error` (the model
+ * failed mid-answer).
+ */
+export async function ask(
+  id: string,
+  q: string,
+  onToken: (token: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${meetingUrl(id)}/ask`, { ...json('POST', { question: q }), signal });
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, await res.text().catch(() => res.statusText));
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  const parser = parseSse();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      for (const msg of parser.push(value)) {
+        if (msg.event === 'done') return;
+        if (msg.event === 'error') throw new ApiError(0, msg.data);
+        if (msg.event === 'message') onToken(msg.data);
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
+/** Subscribes to `/api/events`. Returns a function that closes the stream. */
+export function events(onEvent: (e: RecallEvent) => void): () => void {
+  const source = new EventSource(`${BASE}/events`);
+  source.onmessage = (m) => {
+    try {
+      onEvent(JSON.parse(m.data) as RecallEvent);
+    } catch {
+      // A malformed event is skipped; the stream itself stays open.
+    }
+  };
+  return () => source.close();
+}
