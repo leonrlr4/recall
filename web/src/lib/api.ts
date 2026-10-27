@@ -1,4 +1,6 @@
 import type {
+  Config,
+  ConfigPatch,
   Hit,
   ListFilter,
   Meeting,
@@ -7,6 +9,8 @@ import type {
   MeetingRow,
   Person,
   RecallEvent,
+  SelfTest,
+  Status,
   Step,
 } from './types';
 
@@ -41,11 +45,24 @@ export class ApiError extends Error {
   }
 }
 
+/** The server sends failures as `{ "error": message }`; other bodies pass through. */
+function errorMessage(text: string): string {
+  try {
+    const body = JSON.parse(text) as unknown;
+    if (body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string') {
+      return (body as { error: string }).error;
+    }
+  } catch {
+    // Not JSON, e.g. a proxy's error page.
+  }
+  return text;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new ApiError(res.status, text || res.statusText);
+    throw new ApiError(res.status, errorMessage(text) || res.statusText);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -92,6 +109,24 @@ export function patchPerson(
   body: { name?: string; merge_into?: string },
 ): Promise<unknown> {
   return request(`${BASE}/people/${encodeURIComponent(id)}`, json('PATCH', body));
+}
+
+export function getConfig(): Promise<Config> {
+  return request(`${BASE}/config`);
+}
+
+/** Merged into the config file; the daemon applies it after a restart. */
+export function putConfig(patch: ConfigPatch): Promise<{ restart_required: boolean }> {
+  return request(`${BASE}/config`, json('PUT', patch));
+}
+
+/** Records a few seconds from both sources; resolves when it is done. */
+export function selftest(): Promise<SelfTest> {
+  return request(`${BASE}/selftest`, { method: 'POST' });
+}
+
+export function status(): Promise<Status> {
+  return request(`${BASE}/status`);
 }
 
 export interface SseMessage {
@@ -146,7 +181,7 @@ export async function ask(
 ): Promise<void> {
   const res = await fetch(`${meetingUrl(id)}/ask`, { ...json('POST', { question: q }), signal });
   if (!res.ok || !res.body) {
-    throw new ApiError(res.status, await res.text().catch(() => res.statusText));
+    throw new ApiError(res.status, errorMessage(await res.text().catch(() => res.statusText)));
   }
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   const parser = parseSse();

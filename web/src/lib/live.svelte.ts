@@ -1,5 +1,5 @@
 // Daemon state fed by /api/events, shared by every page.
-import { events } from './api';
+import { events, status } from './api';
 import type { RecallEvent, Step } from './types';
 
 export const live = $state<{
@@ -39,4 +39,15 @@ let close: (() => void) | null = null;
 export function connectLive(): void {
   if (close || typeof EventSource === 'undefined') return;
   close = events(apply);
+  // Events only report changes, so ask once for the state at load time. An
+  // event that arrived first is newer and wins.
+  const seen = live.version;
+  status()
+    .then((s) => {
+      if (live.version !== seen || live.recording !== null) return;
+      if (s.phase === 'recording') live.recording = s.source_app ?? '';
+    })
+    .catch(() => {
+      // The header simply shows idle until the first event.
+    });
 }

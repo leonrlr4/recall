@@ -177,7 +177,9 @@
   }
 
   function deleteLine(index: number) {
-    if (pending) return;
+    // The Transcript disables delete while a line is open; this guards the
+    // same rule for any other caller.
+    if (pending || editing !== null) return;
     patch({ segments: [{ index, delete: true }] })
       .then(() => {
         editing = shiftAfterDelete(editing, index);
@@ -194,8 +196,15 @@
 
   async function saveTitle() {
     const title = titleDraft.trim();
+    if (!meeting || !title || title === meeting.title) {
+      titleEditing = false;
+      return;
+    }
+    // A segment edit in flight would return the old title, or this response
+    // would overwrite its segments; keep the editor open until it lands.
+    if (pending) return;
     titleEditing = false;
-    if (!meeting || !title || title === meeting.title) return;
+    pending = true;
     try {
       const updated = await patchMeeting(id, { title });
       // Renaming moves the meeting directory, which changes the id.
@@ -203,6 +212,8 @@
       else if (detail) detail.meeting = updated;
     } catch (e) {
       flash(t('meeting.save_failed', { error: e instanceof Error ? e.message : String(e) }), 'err');
+    } finally {
+      pending = false;
     }
   }
 

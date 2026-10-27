@@ -44,6 +44,18 @@ export function setLocale(l: Locale): void {
   if (globalThis.document) document.documentElement.lang = l === 'zh-TW' ? 'zh-Hant-TW' : 'en';
 }
 
+/** Forgets the stored choice and follows the browser language again. */
+export function followBrowserLocale(): void {
+  try {
+    globalThis.localStorage?.removeItem(STORAGE_KEY);
+  } catch {
+    // See setLocale.
+  }
+  const l = detectLocale(null, globalThis.navigator?.language);
+  lang.current = l;
+  if (globalThis.document) document.documentElement.lang = l === 'zh-TW' ? 'zh-Hant-TW' : 'en';
+}
+
 function lookup(dict: Dict, key: string): string | undefined {
   let node: string | Dict | undefined = dict;
   for (const part of key.split('.')) {
