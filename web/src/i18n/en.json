@@ -176,7 +176,7 @@
     "data_dir": "Data folder",
     "data_dir_help": "Absolute path for the speaker registry, search index and models.",
     "record_screen": "Record the screen too",
-    "record_screen_help": "Saves a screen recording next to the audio.",
+    "record_screen_help": "Not used yet.",
     "allowlist": "Apps that start a recording",
     "allowlist_help": "recall records when one of these apps uses the microphone. Press Enter or comma to add.",
     "tag_placeholder": "Add an app…",

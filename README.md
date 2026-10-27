@@ -176,7 +176,7 @@ debounce_secs = 8                      # mic must stay open this long to record
 end_grace_secs = 30                    # mic closed this long ends the recording
 min_length_secs = 120                  # shorter detected recordings are deleted
 summary_lang = "zh-TW"                 # "zh-TW" or "en"
-# ui_lang = "en"                       # unset: follow the browser
+# ui_lang = "en"                       # unset: follow the browser; a choice made in the UI wins
 port = 7474
 
 [llm]
@@ -186,7 +186,7 @@ endpoint = "http://127.0.0.1:11434"    # Ollama only
 context_tokens = 32768                 # model context; see below
 
 [stt]
-engine = "breeze"
+engine = "breeze"                      # the only engine; anything else is rejected
 threads = 8
 ```
 

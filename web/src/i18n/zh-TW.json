@@ -176,7 +176,7 @@
     "data_dir": "資料目錄",
     "data_dir_help": "絕對路徑。存放講者名冊、搜尋索引和模型。",
     "record_screen": "同時錄製螢幕",
-    "record_screen_help": "在錄音旁另存一份螢幕錄影。",
+    "record_screen_help": "尚未使用。",
     "allowlist": "會觸發錄音的 App",
     "allowlist_help": "這些 App 使用麥克風時，recall 就開始錄音。按 Enter 或逗號新增。",
     "tag_placeholder": "新增 App…",

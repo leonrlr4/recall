@@ -1,6 +1,7 @@
 //! Recorder status and control, the audio self-test, and the config file.
 
 use std::fs;
+use std::io::Write;
 
 use anyhow::Context;
 use axum::Json;
@@ -53,14 +54,19 @@ pub async fn get_config(State(state): State<AppState>) -> Json<Config> {
     Json((*state.config).clone())
 }
 
+/// The speech recognition engines recall has; `stt.engine` must be one.
+const STT_ENGINES: [&str; 1] = ["breeze"];
+
 /// Top-level key that `Config` omits when unset, so it is absent from the
 /// serialized defaults that define the known keys.
 const OPTIONAL_KEYS: [&str; 1] = ["ui_lang"];
 
 /// Merges the body, which may hold any subset of the config's keys (nested
 /// `llm`/`stt` too), onto the config file on disk and writes the result back
-/// as TOML. Unknown keys, a zero port and relative directories are 400s. The
-/// running server keeps its config until restarted.
+/// as TOML, through a temporary file and a rename so a crash never leaves a
+/// half-written file. Unknown keys, a zero port, relative directories and an
+/// unknown `stt.engine` are 400s. The running server keeps its config until
+/// restarted.
 pub async fn put_config(
     State(state): State<AppState>,
     Json(body): Json<Value>,
@@ -85,6 +91,12 @@ pub async fn put_config(
     if config.port == 0 {
         return Err(ApiError::bad_request("port must not be 0"));
     }
+    if !STT_ENGINES.contains(&config.stt.engine.as_str()) {
+        return Err(ApiError::bad_request(format!(
+            "stt.engine must be one of {STT_ENGINES:?}, got {:?}",
+            config.stt.engine
+        )));
+    }
     for (key, dir) in [
         ("meetings_dir", &config.meetings_dir),
         ("data_dir", &config.data_dir),
@@ -97,10 +109,18 @@ pub async fn put_config(
         }
     }
     let text = toml::to_string_pretty(&config).context("encoding config as TOML")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    };
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating a temporary file in {}", parent.display()))?;
+    tmp.write_all(text.as_bytes())
+        .and_then(|()| tmp.as_file().sync_all())
+        .with_context(|| format!("writing {}", tmp.path().display()))?;
+    tmp.persist(path)
+        .with_context(|| format!("renaming to {}", path.display()))?;
     Ok(Json(json!({ "restart_required": true })))
 }
 

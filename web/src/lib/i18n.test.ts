@@ -89,4 +89,11 @@ describe('i18n', () => {
     expect(detectLocale(null, 'en-US')).toBe('en');
     expect(detectLocale('fr', 'de-DE')).toBe('en');
   });
+
+  it('detect_locale_uses_config_ui_lang_when_nothing_is_stored', () => {
+    expect(detectLocale(null, 'en-US', 'zh-TW')).toBe('zh-TW');
+    expect(detectLocale(null, 'zh-TW', 'en')).toBe('en');
+    expect(detectLocale('en', 'en-US', 'zh-TW')).toBe('en');
+    expect(detectLocale(null, 'zh-TW', 'fr')).toBe('zh-TW');
+  });
 });

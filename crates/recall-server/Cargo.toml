@@ -17,6 +17,7 @@ mime_guess = "2"
 rust-embed = "8"
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 toml = "1"
 tower = { version = "0.5", features = ["util"] }

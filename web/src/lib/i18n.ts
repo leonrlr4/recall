@@ -9,9 +9,17 @@ type Dict = { [key: string]: string | Dict };
 const DICTS: Record<Locale, Dict> = { 'zh-TW': zhTW, en };
 const STORAGE_KEY = 'recall_lang';
 
-/** A stored choice wins; otherwise any Chinese browser locale gets zh-TW. */
-export function detectLocale(stored: string | null, browser: string | undefined): Locale {
+/**
+ * A stored choice wins, then the config's `ui_lang`; otherwise any Chinese
+ * browser locale gets zh-TW.
+ */
+export function detectLocale(
+  stored: string | null,
+  browser: string | undefined,
+  configured: string | null = null,
+): Locale {
   if (stored === 'zh-TW' || stored === 'en') return stored;
+  if (configured === 'zh-TW' || configured === 'en') return configured;
   return browser?.toLowerCase().startsWith('zh') ? 'zh-TW' : 'en';
 }
 
@@ -41,6 +49,18 @@ export function setLocale(l: Locale): void {
   } catch {
     // Private windows may refuse storage; the choice then lasts this session.
   }
+  if (globalThis.document) document.documentElement.lang = l === 'zh-TW' ? 'zh-Hant-TW' : 'en';
+}
+
+/**
+ * Applies the config's `ui_lang` (fetched after the page has loaded) unless
+ * this browser has stored its own choice. Nothing is stored, so changing
+ * `ui_lang` later takes effect on the next load.
+ */
+export function applyConfiguredLocale(configured: string | null | undefined): void {
+  const l = detectLocale(storedLocale(), globalThis.navigator?.language, configured ?? null);
+  if (l === lang.current) return;
+  lang.current = l;
   if (globalThis.document) document.documentElement.lang = l === 'zh-TW' ? 'zh-Hant-TW' : 'en';
 }
 

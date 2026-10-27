@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import RecordStatus from './components/RecordStatus.svelte';
-  import { t } from './lib/i18n';
+  import { getConfig } from './lib/api';
+  import { applyConfiguredLocale, t } from './lib/i18n';
   import { connectLive } from './lib/live.svelte';
   import { current, link, onRoute, type Route } from './lib/router';
   import List from './routes/List.svelte';
@@ -12,6 +13,9 @@
   let route = $state<Route>(current());
 
   onMount(() => {
+    getConfig()
+      .then((c) => applyConfiguredLocale(c.ui_lang))
+      .catch(() => {});
     connectLive();
     return onRoute((r) => (route = r));
   });

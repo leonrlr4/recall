@@ -666,6 +666,7 @@ async fn config_get_and_put() {
         (json!({ "port": 0 }), "port"),
         (json!({ "data_dir": "rel/dir" }), "data_dir"),
         (json!({ "port": "x" }), "invalid config"),
+        (json!({ "stt": { "engine": "whisper" } }), "stt.engine"),
         (json!([1]), "object"),
     ] {
         let res = put(body.clone()).await.unwrap();
@@ -677,6 +678,13 @@ async fn config_get_and_put() {
         );
     }
     assert_eq!(Config::load_from(&path).unwrap().port, 9000);
+    // Written through a temporary file that is renamed into place.
+    let names: Vec<_> = fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n != "Meetings" && n != "data")
+        .collect();
+    assert_eq!(names, ["config.toml"]);
 }
 
 #[tokio::test]
