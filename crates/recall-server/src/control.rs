@@ -28,7 +28,19 @@ pub async fn record(
 }
 
 /// Records a few seconds from both sources and returns their peak levels.
+///
+/// 409 unless the recorder is idle: a second capture beside a recording (or
+/// an armed cache) would compete with it for the same streams.
 pub async fn selftest(State(state): State<AppState>) -> ApiResult<Json<SelfTestResult>> {
+    let phase = state
+        .status
+        .read()
+        .expect("status lock poisoned")
+        .phase
+        .clone();
+    if phase != "idle" {
+        return Err(ApiError::conflict("recording in progress"));
+    }
     let run = state.selftest.clone();
     let result = tokio::task::spawn_blocking(move || run())
         .await

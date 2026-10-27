@@ -88,6 +88,19 @@ pub async fn patch(
 ) -> ApiResult<Json<PersonDto>> {
     let id = SpeakerId(id);
     let mut speakers = state.speakers.lock().expect("speakers lock poisoned");
+    // A running job renders names into its meeting and rewrites
+    // speakers.json; an edit now would be lost or half applied.
+    if state
+        .index
+        .lock()
+        .expect("index lock poisoned")
+        .running_job()?
+        .is_some()
+    {
+        return Err(ApiError::conflict(
+            "a meeting is being processed; try again when it finishes",
+        ));
+    }
     if speakers.get(&id).is_none() {
         return Err(ApiError::not_found(format!("no speaker {:?}", id.0)));
     }

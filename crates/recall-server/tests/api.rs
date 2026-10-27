@@ -705,3 +705,38 @@ async fn busy_meeting_refuses_edit_delete_and_rerun() {
         .unwrap();
     assert_eq!(res.status(), 204);
 }
+
+#[tokio::test]
+async fn selftest_refuses_while_recording() {
+    let h = harness().await;
+    h.state.status.write().unwrap().phase = "recording".into();
+    let res = reqwest::Client::new()
+        .post(h.url("/api/selftest"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body, json!({ "error": "recording in progress" }));
+}
+
+#[tokio::test]
+async fn people_patch_refuses_while_a_job_runs() {
+    let h = harness().await;
+    {
+        let index = h.state.index.lock().unwrap();
+        index
+            .enqueue(&MeetingId(WEEKLY.into()), Step::Segment)
+            .unwrap();
+        index.next_job().unwrap().unwrap();
+    }
+    let res = reqwest::Client::new()
+        .patch(h.url(&format!("/api/people/{}", h.alice.0)))
+        .json(&json!({ "name": "Alice Chen" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let saved = Speakers::load(&h.config.speakers_path()).unwrap();
+    assert_eq!(saved.name_of(&h.alice), "Alice");
+}

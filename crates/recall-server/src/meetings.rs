@@ -317,6 +317,9 @@ pub async fn rerun(
     let step: Step = serde_json::from_value(Value::String(step.clone()))
         .map_err(|_| ApiError::bad_request(format!("unknown step {step:?}")))?;
     let dir = open_dir(&state.config, &id)?;
+    // Held through the enqueue, so a PATCH of this meeting, which holds it
+    // from load to save, cannot be between its busy check and its save.
+    let _speakers = state.speakers.lock().expect("speakers lock poisoned");
     ensure_idle(&state.index.lock().expect("index lock poisoned"), &dir.id)?;
     let job = (state.rerun)(&dir.id, step)?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "job": job }))))
