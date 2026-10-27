@@ -666,4 +666,65 @@ mod tests {
         let nul = whisper.transcribe(&samples, &regions, "z\0h").unwrap_err();
         assert!(format!("{nul:#}").contains("NUL"), "{nul:#}");
     }
+
+    /// The fixture twice, 200 ms apart, through VAD, region merging and
+    /// whisper as the runner does it: the sentence must come out twice.
+    ///
+    /// Known limitation, so ignored: VAD finds two regions (about 1.4-7.2 s
+    /// and 10.2-16.0 s), [`glue_regions`] packs both into one window, and
+    /// Breeze emits the sentence once, with timestamps stretched over both.
+    /// Stricter temperature fallback (entropy 2.0, logprob -0.5) and a
+    /// 1 s gap between glued regions do not change that; one region per
+    /// window does, at about twice the time (13.6 s against 6.7 s for this
+    /// test in release, model load included). Run with `--ignored` once that trade-off is decided.
+    #[test]
+    #[ignore = "whisper drops a repeated sentence within one glued window"]
+    fn whisper_keeps_repeated_speech() {
+        let Some(model) = installed_breeze() else {
+            eprintln!("skipping whisper_keeps_repeated_speech: Breeze model not found");
+            return;
+        };
+        let models = model.parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let twice = tmp.path().join("twice.opus");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/speech.opus");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(&fixture)
+            .args([
+                "-f",
+                "lavfi",
+                "-t",
+                "0.2",
+                "-i",
+                "anullsrc=r=48000:cl=mono",
+                "-i",
+            ])
+            .arg(&fixture)
+            .args([
+                "-filter_complex",
+                "[0:a][1:a][2:a]concat=n=3:v=0:a=1",
+                "-c:a",
+                "libopus",
+            ])
+            .arg(&twice)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let (samples, _) = crate::decode_stereo(&twice).unwrap();
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let vad = crate::SileroVad::load(models, threads).unwrap();
+        use crate::Vad as _;
+        let regions = crate::merge_close(&vad.regions(&samples).unwrap(), 300, 30_000);
+        let mut whisper = WhisperTranscriber::load(&model, threads).unwrap();
+
+        let utterances = whisper.transcribe(&samples, &regions, "zh").unwrap();
+
+        eprintln!("regions {regions:?}\nutterances {utterances:#?}");
+        let said = utterances
+            .iter()
+            .filter(|u| u.text.to_lowercase().contains("nightfall"))
+            .count();
+        assert_eq!(said, 2, "{utterances:#?}");
+    }
 }

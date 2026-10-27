@@ -485,6 +485,67 @@ impl Index {
         Ok(())
     }
 
+    /// The meeting's pending or running job, if any. The server refuses to
+    /// edit or delete a meeting while it has one, because the job rewrites
+    /// `meeting.json` when it finishes each step.
+    pub fn active_job(&self, meeting: &MeetingId) -> Result<Option<Job>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id, from_step, attempts FROM jobs
+                 WHERE meeting = ?1 AND state IN ('pending', 'running')
+                 ORDER BY id LIMIT 1",
+                params![meeting.0],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, u32>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|(id, step, attempts)| {
+            Ok(Job {
+                id,
+                meeting: meeting.clone(),
+                from_step: parse_step(&step)?,
+                attempts,
+            })
+        })
+        .transpose()
+    }
+
+    /// The job being processed now, if any. The server refuses speaker edits
+    /// while there is one: they rewrite meeting files the job also writes.
+    pub fn running_job(&self) -> Result<Option<Job>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id, meeting, from_step, attempts FROM jobs
+                 WHERE state = 'running' ORDER BY id LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, u32>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|(id, meeting, step, attempts)| {
+            Ok(Job {
+                id,
+                meeting: MeetingId(meeting),
+                from_step: parse_step(&step)?,
+                attempts,
+            })
+        })
+        .transpose()
+    }
+
     /// Returns jobs left running by a daemon that stopped to pending. Call on
     /// daemon start, before taking jobs.
     pub fn reset_running_jobs(&self) -> Result<()> {
@@ -813,5 +874,46 @@ mod tests {
         let next = index.next_job().unwrap().unwrap();
         assert_eq!((next.id, next.from_step), (again, Step::Write));
         assert!(index.next_job().unwrap().is_none());
+    }
+
+    #[test]
+    fn active_job_sees_pending_and_running_only() {
+        let (_dir, index) = open();
+        let a = MeetingId("a".into());
+        let b = MeetingId("b".into());
+        assert_eq!(index.active_job(&a).unwrap(), None);
+
+        let ja = index.enqueue(&a, Step::Summarize).unwrap();
+        let pending = index.active_job(&a).unwrap().unwrap();
+        assert_eq!(
+            (
+                pending.id,
+                &pending.meeting,
+                pending.from_step,
+                pending.attempts
+            ),
+            (ja, &a, Step::Summarize, 0)
+        );
+        assert_eq!(index.active_job(&b).unwrap(), None);
+
+        index.next_job().unwrap().unwrap();
+        assert_eq!(index.active_job(&a).unwrap().unwrap().attempts, 1);
+        index.finish_job(ja, true, None).unwrap();
+        assert_eq!(index.active_job(&a).unwrap(), None);
+    }
+
+    #[test]
+    fn running_job_ignores_pending_and_finished() {
+        let (_dir, index) = open();
+        let a = MeetingId("a".into());
+        assert_eq!(index.running_job().unwrap(), None);
+        let ja = index.enqueue(&a, Step::Segment).unwrap();
+        index.enqueue(&MeetingId("b".into()), Step::Write).unwrap();
+        assert_eq!(index.running_job().unwrap(), None);
+
+        let taken = index.next_job().unwrap().unwrap();
+        assert_eq!(index.running_job().unwrap(), Some(taken));
+        index.finish_job(ja, false, Some("x")).unwrap();
+        assert_eq!(index.running_job().unwrap(), None);
     }
 }

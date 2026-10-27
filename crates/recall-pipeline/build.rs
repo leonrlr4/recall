@@ -8,6 +8,12 @@
 //! `sherpa-onnx-sys` also copies the libraries) and `$ORIGIN/../lib/recall`
 //! (the installed layout) as rpaths, and exports the build-time directory as
 //! `RECALL_SHERPA_LIB_DIR` for `recall_pipeline::models::shared_library_dir`.
+//!
+//! These link arguments reach only this crate's own targets (its tests).
+//! Binaries in other packages get the directory as `DEP_RECALL_SHERPA_LIB_DIR`
+//! (the `links = "recall_sherpa"` metadata key `lib_dir`, empty when not
+//! found) and must add the same rpaths in their own build script, as
+//! `crates/recall/build.rs` does.
 
 use std::env;
 use std::fs;
@@ -37,6 +43,7 @@ fn main() {
         Some(dir) => {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
             println!("cargo:rustc-env=RECALL_SHERPA_LIB_DIR={}", dir.display());
+            println!("cargo:lib_dir={}", dir.display());
         }
         None => {
             println!(
@@ -44,6 +51,7 @@ fn main() {
                  absolute rpath, $ORIGIN is still searched"
             );
             println!("cargo:rustc-env=RECALL_SHERPA_LIB_DIR=");
+            println!("cargo:lib_dir=");
         }
     }
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib/recall");

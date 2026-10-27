@@ -119,6 +119,16 @@ pub(crate) fn open_dir(config: &Config, id: &str) -> ApiResult<MeetingDir> {
         .map_err(|e| ApiError::not_found(format!("{e:#}")))
 }
 
+/// 409 while the meeting has a pending or running job: the job saves
+/// `meeting.json` after every step and would overwrite an edit, or recreate
+/// a deleted directory's files.
+fn ensure_idle(index: &Index, id: &MeetingId) -> ApiResult<()> {
+    match index.active_job(id)? {
+        Some(_) => Err(ApiError::conflict("meeting is being processed")),
+        None => Ok(()),
+    }
+}
+
 pub(crate) fn load(dir: &MeetingDir) -> ApiResult<Meeting> {
     Ok(Meeting::load(&dir.path())?)
 }
@@ -213,6 +223,7 @@ pub async fn patch(
     // rewrites meeting files, cannot interleave with this one.
     let speakers = state.speakers.lock().expect("speakers lock poisoned");
     let dir = open_dir(&state.config, &id)?;
+    ensure_idle(&state.index.lock().expect("index lock poisoned"), &dir.id)?;
     let mut meeting = load(&dir)?;
 
     let len = meeting.segments.len();
@@ -286,6 +297,7 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     let dir = open_dir(&state.config, &id)?;
+    ensure_idle(&state.index.lock().expect("index lock poisoned"), &dir.id)?;
     let path = dir.path();
     fs::remove_dir_all(&path).with_context(|| format!("removing {}", path.display()))?;
     state
@@ -305,6 +317,10 @@ pub async fn rerun(
     let step: Step = serde_json::from_value(Value::String(step.clone()))
         .map_err(|_| ApiError::bad_request(format!("unknown step {step:?}")))?;
     let dir = open_dir(&state.config, &id)?;
+    // Held through the enqueue, so a PATCH of this meeting, which holds it
+    // from load to save, cannot be between its busy check and its save.
+    let _speakers = state.speakers.lock().expect("speakers lock poisoned");
+    ensure_idle(&state.index.lock().expect("index lock poisoned"), &dir.id)?;
     let job = (state.rerun)(&dir.id, step)?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "job": job }))))
 }

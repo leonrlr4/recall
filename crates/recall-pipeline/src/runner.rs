@@ -46,7 +46,8 @@ pub struct Engines {
 
 impl Engines {
     /// Downloads any missing model into `config.models_dir()` and loads the
-    /// engines. `progress` receives `(model file, downloaded, total)` bytes
+    /// engines. An LLM backend that cannot be built does not fail the load;
+    /// see [`recall_llm::from_config_or_unavailable`]. `progress` receives `(model file, downloaded, total)` bytes
     /// during downloads.
     pub async fn load(config: &Config, progress: impl Fn(&str, u64, u64)) -> Result<Self> {
         let dir = config.models_dir();
@@ -67,7 +68,7 @@ impl Engines {
                 threads,
             )?),
             diarizer: Box::new(SherpaDiarizer::load(&dir, threads)?),
-            llm: recall_llm::from_config(&config.llm)?,
+            llm: recall_llm::from_config_or_unavailable(&config.llm),
         })
     }
 }

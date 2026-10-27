@@ -46,6 +46,42 @@ pub fn from_config(cfg: &LlmConfig) -> Result<Arc<dyn Llm>> {
     }
 }
 
+/// Like [`from_config`], but never fails: a backend that cannot be built
+/// (the Claude backend without `ANTHROPIC_API_KEY`, an unknown backend) is
+/// replaced by one whose every call fails with the reason. Recording and
+/// transcription do not need the model, so a bad LLM config must only fail
+/// the steps that call it.
+pub fn from_config_or_unavailable(cfg: &LlmConfig) -> Arc<dyn Llm> {
+    match from_config(cfg) {
+        Ok(llm) => llm,
+        Err(err) => Arc::new(Unavailable {
+            reason: format!("{err:#}"),
+            backend: cfg.backend.clone(),
+        }),
+    }
+}
+
+/// An LLM backend that could not be built.
+struct Unavailable {
+    reason: String,
+    backend: String,
+}
+
+#[async_trait]
+impl Llm for Unavailable {
+    async fn complete(&self, _: &str, _: &str) -> Result<String> {
+        bail!("the LLM is unavailable: {}", self.reason)
+    }
+
+    async fn stream(&self, _: &str, _: &str, _: mpsc::Sender<String>) -> Result<()> {
+        bail!("the LLM is unavailable: {}", self.reason)
+    }
+
+    fn name(&self) -> String {
+        format!("{}/unavailable", self.backend)
+    }
+}
+
 /// The config's model, unless it is empty or an Ollama model left over from
 /// the default config (they start with `qwen`).
 fn claude_model(cfg: &LlmConfig) -> String {
@@ -59,6 +95,26 @@ fn claude_model(cfg: &LlmConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unbuildable_backend_fails_each_call_with_the_reason() {
+        let cfg = LlmConfig {
+            backend: "nonsense".into(),
+            ..LlmConfig::default()
+        };
+        let llm = from_config_or_unavailable(&cfg);
+        let err = llm.complete("s", "u").await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("unknown LLM backend"),
+            "{err:#}"
+        );
+        let (tx, _rx) = mpsc::channel(1);
+        assert!(llm.stream("s", "u", tx).await.is_err());
+        assert_eq!(llm.name(), "nonsense/unavailable");
+
+        let ok = from_config_or_unavailable(&LlmConfig::default());
+        assert_eq!(ok.name(), "ollama/qwen3.6:35b-a3b");
+    }
 
     #[test]
     fn claude_model_replaces_empty_and_ollama_default() {

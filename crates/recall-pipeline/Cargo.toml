@@ -4,6 +4,9 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# Lets this crate's build script pass the sherpa-onnx library directory to
+# dependents as DEP_RECALL_SHERPA_LIB_DIR; see build.rs.
+links = "recall_sherpa"
 
 [dependencies]
 recall-store.workspace = true
