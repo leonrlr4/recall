@@ -1,0 +1,127 @@
+{
+  "nav": {
+    "label": "Main",
+    "meetings": "Meetings",
+    "people": "People",
+    "settings": "Settings"
+  },
+  "status": {
+    "recording": "Recording {app}"
+  },
+  "common": {
+    "loading": "Loading…",
+    "save": "Save",
+    "cancel": "Cancel",
+    "back_to_list": "All meetings",
+    "not_found": "This page does not exist.",
+    "coming_soon": "This page is not built yet."
+  },
+  "keys": {
+    "title": "Keyboard",
+    "search": "Search",
+    "move": "Next / previous",
+    "open": "Open",
+    "enter_key": "Enter",
+    "space_key": "space",
+    "meeting": "space play or pause · [ ] previous or next line · e edit line · s next speaker"
+  },
+  "list": {
+    "title": "Meetings",
+    "results": "Results",
+    "count": "{n} meetings",
+    "count_one": "1 meeting",
+    "search_placeholder": "Search titles and transcripts",
+    "search_label": "Search meetings",
+    "search_hint": "Press / to search",
+    "filters": "Filters",
+    "filter_app": "App",
+    "filter_participant": "Participant",
+    "filter_from": "From",
+    "filter_to": "To",
+    "any": "Any app",
+    "anyone": "Anyone",
+    "clear_filters": "Clear filters",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "no_summary": "No summary",
+    "no_results": "No meetings match these filters.",
+    "empty_title": "No meetings yet",
+    "empty_body": "recall starts recording on its own when a meeting app uses your microphone.",
+    "load_failed": "Could not load meetings: {error}"
+  },
+  "state": {
+    "recording": "Recording",
+    "processing": "{step}…",
+    "processing_pct": "{step} {pct}%",
+    "failed": "{step} failed",
+    "done": "Done"
+  },
+  "step": {
+    "segment": "Segmenting",
+    "transcribe": "Transcribing",
+    "diarize": "Separating speakers",
+    "name": "Naming speakers",
+    "summarize": "Summarizing",
+    "write": "Writing"
+  },
+  "meeting": {
+    "untitled": "Untitled meeting",
+    "rename": "Click to rename",
+    "title_label": "Meeting title",
+    "rerun": "Rerun",
+    "rerun_step": "Rerun from step",
+    "rerun_queued": "Queued: rerun from {step}",
+    "rerun_failed": "Could not rerun: {error}",
+    "delete": "Delete",
+    "delete_confirm": "Delete “{title}” with its audio and transcript? This cannot be undone.",
+    "delete_failed": "Could not delete: {error}",
+    "save_failed": "Could not save: {error}",
+    "load_failed": "Could not load this meeting: {error}"
+  },
+  "summary": {
+    "title": "Summary",
+    "decisions": "Decisions",
+    "actions": "Action items",
+    "chapters": "Chapters",
+    "due": "due {due}",
+    "pending": "The summary appears when processing finishes.",
+    "none": "No summary for this meeting."
+  },
+  "transcript": {
+    "title": "Transcript",
+    "empty": "No transcript yet.",
+    "play_from": "Play from here",
+    "edit": "Edit line (e)",
+    "edit_label": "Line text",
+    "edit_hint": "Enter saves, Esc cancels",
+    "next_speaker": "Next speaker (s)",
+    "delete": "Delete line"
+  },
+  "speaker": {
+    "me": "Me",
+    "them": "Them",
+    "unknown": "Unknown speaker"
+  },
+  "player": {
+    "me": "Me",
+    "them": "Them",
+    "waveform": "Waveform, click to seek",
+    "loading_waveform": "Drawing waveform…",
+    "jump_chapter": "Jump to chapter {title}"
+  },
+  "ask": {
+    "title": "Ask this meeting",
+    "intro": "Ask about what was said. Answers come from this meeting's transcript.",
+    "placeholder": "What did we decide about the budget?",
+    "send": "Ask",
+    "stop": "Stop",
+    "stopped": "(stopped)",
+    "failed": "Could not get an answer. Check that the language model is running."
+  },
+  "people": {
+    "title": "People"
+  },
+  "settings": {
+    "title": "Settings"
+  }
+}
