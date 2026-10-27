@@ -42,6 +42,13 @@ pub async fn run(config: Config) -> Result<()> {
         )
         .try_init();
 
+    // Recovery would take a running daemon's live cache for a crashed one,
+    // and `serve` would replace its socket.
+    let socket = control::socket_path();
+    if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+        bail!("another recall daemon is listening on {}", socket.display());
+    }
+
     let config = Arc::new(config);
     let index = Index::open(&config.index_path())
         .with_context(|| format!("opening {}", config.index_path().display()))?;
@@ -79,7 +86,6 @@ pub async fn run(config: Config) -> Result<()> {
             .context("spawning the recorder thread")?
     };
 
-    let socket = control::socket_path();
     let mut control_server = {
         let socket = socket.clone();
         let status = status.clone();
