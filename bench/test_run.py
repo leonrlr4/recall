@@ -60,6 +60,19 @@ class ScoreTest(unittest.TestCase):
         self.assertAlmostEqual(s["side"], 1.0)
         self.assertEqual(s["leaked"], 0)
 
+    def test_repeated_characters_need_repeated_matches(self):
+        truth = {"lines": [truth_line(0, 3000, "me", "我的的的")]}
+        transcript = [line(0, 3000, "me", "我的")]
+        self.assertAlmostEqual(run.score(truth, transcript)["found"], 2 / 4)
+
+    def test_transcript_tokens_are_used_once_across_truth_lines(self):
+        truth = {"lines": [
+            truth_line(0, 1000, "me", "好"),
+            truth_line(1500, 2500, "me", "好"),
+        ]}
+        transcript = [line(0, 2500, "me", "好")]
+        self.assertAlmostEqual(run.score(truth, transcript)["found"], 1 / 2)
+
     def test_words_outside_two_second_window_are_not_found(self):
         truth = {"lines": [truth_line(0, 1000, "me", "hello there")]}
         transcript = [line(3100, 4000, "me", "hello there")]
@@ -93,9 +106,13 @@ class RunCaseTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.fixtures = self.root / "fixtures"
-        self.bin = self.root / "recall"
-        self.bin.write_text("#!/bin/sh\necho '[]'\n")
-        self.bin.chmod(self.bin.stat().st_mode | stat.S_IXUSR)
+        self.bin = self.stub("recall", "[]")
+
+    def stub(self, name, output):
+        path = self.root / name
+        path.write_text(f"#!/bin/sh\necho '{output}'\n")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -121,6 +138,20 @@ class RunCaseTest(unittest.TestCase):
         result = run.run_case(d, self.bin)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["lines"], 0)
+
+    def test_accepts_segments_object(self):
+        d = self.make_case("silence", {"lines": []})
+        result = run.run_case(d, self.stub("segments", '{"segments": []}'))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["lines"], 0)
+
+    def test_other_output_is_an_error_row(self):
+        d = self.make_case("silence", {"lines": []})
+        for name, output in [("number", "42"), ("text", "not json"), ("object", '{"lines": []}'),
+                             ("badline", '[{"text": "x"}]')]:
+            result = run.run_case(d, self.stub(name, output))
+            self.assertEqual(result["status"], "error", name)
+            self.assertEqual(result["reason"], "bad JSON from transcribe-file")
 
     def test_main_check_exit_codes(self):
         self.make_case("silence", {"lines": []})

@@ -72,8 +72,12 @@ if [ "$uninstall" -eq 1 ]; then
     exit 0
 fi
 
+needed=(pipewire ffmpeg opencc cargo clang cmake pkg-config)
+if [ "$vulkan" -eq 1 ]; then
+    needed+=(glslc)
+fi
 missing=()
-for cmd in pipewire ffmpeg opencc cargo; do
+for cmd in "${needed[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -96,7 +100,9 @@ run "${build[@]}"
 # script's output directory.
 find_lib_dir() {
     local dir
-    for dir in "$target_dir/release" "$target_dir"/sherpa-onnx-prebuilt/*shared*/lib "$target_dir"/release/build/*/out; do
+    # The version must match SHERPA_VERSION in crates/recall-pipeline/build.rs;
+    # the prebuilt directory keeps downloads of earlier versions.
+    for dir in "$target_dir/release" "$target_dir"/sherpa-onnx-prebuilt/sherpa-onnx-v2.0.1-*shared*/lib "$target_dir"/release/build/*/out; do
         if [ -f "$dir/libsherpa-onnx-c-api.so" ]; then
             echo "$dir"
             return 0

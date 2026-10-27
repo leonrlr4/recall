@@ -192,8 +192,9 @@ Summaries and the "ask this meeting" box use one of two backends.
   `ollama pull qwen3.6:35b-a3b`, or set `model` to one you have.
 - `claude`: the Anthropic API. Set `backend = "claude"` and export
   `ANTHROPIC_API_KEY` in the service's environment (for example with
-  `systemctl --user edit recall` and an `Environment=` line). Without a
-  `model` of its own, it uses `claude-sonnet-5-5`.
+  `systemctl --user edit recall` and an `Environment=` line). A `model`
+  that is empty or starts with `qwen` (such as the Ollama default) is replaced
+  by `claude-sonnet-5-5`; set `model` to another Claude model name to use that.
 
 ## GPU transcription
 
