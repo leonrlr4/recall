@@ -280,4 +280,6 @@ cases.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The test clip
+`crates/recall-pipeline/tests/fixtures/speech.opus` is from LibriSpeech
+(CC BY 4.0); [NOTICE](NOTICE) has the attribution.

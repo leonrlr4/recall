@@ -1,0 +1,14 @@
+recall
+Copyright (c) the recall authors. Licensed under the MIT License; see LICENSE.
+
+This repository includes third-party material under other terms:
+
+crates/recall-pipeline/tests/fixtures/speech.opus
+    Utterance 1089-134686-0000 of the LibriSpeech ASR corpus (test-clean),
+    with one second of silence added before and after and re-encoded as
+    Opus. LibriSpeech is licensed under the Creative Commons Attribution 4.0
+    International License (CC BY 4.0,
+    https://creativecommons.org/licenses/by/4.0/) and is described in:
+    Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur,
+    "Librispeech: an ASR corpus based on public domain audio books",
+    ICASSP 2015. Source: https://www.openslr.org/12/
