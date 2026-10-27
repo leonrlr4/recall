@@ -73,6 +73,32 @@ class ScoreTest(unittest.TestCase):
         transcript = [line(0, 2500, "me", "好")]
         self.assertAlmostEqual(run.score(truth, transcript)["found"], 1 / 2)
 
+    def test_wrong_side_truth_does_not_steal_right_side_match(self):
+        truth = {"lines": [
+            truth_line(0, 1000, "them", "好"),
+            truth_line(1500, 2500, "me", "好"),
+        ]}
+        s = run.score(truth, [line(1500, 2500, "me", "好")])
+        self.assertAlmostEqual(s["found"], 0.5)
+        self.assertAlmostEqual(s["side"], 1.0)
+
+    def test_transcript_order_does_not_change_scores(self):
+        truth = {"lines": [
+            truth_line(0, 2000, "me", "我們 deploy 好了"),
+            truth_line(1000, 3000, "them", "好 thanks 我們"),
+            truth_line(4000, 6000, "me", "好的的"),
+        ]}
+        transcript = [
+            line(0, 2000, "me", "我們 deploy 好"),
+            line(1200, 3000, "me", "好 thanks"),
+            line(1000, 3000, "them", "我們 好"),
+            line(4000, 6000, "them", "的的 好"),
+            line(4500, 6000, "me", "好的"),
+        ]
+        expected = run.score(truth, transcript)
+        for order in ([4, 3, 2, 1, 0], [2, 0, 4, 1, 3], [1, 3, 0, 4, 2]):
+            self.assertEqual(run.score(truth, [transcript[i] for i in order]), expected)
+
     def test_words_outside_two_second_window_are_not_found(self):
         truth = {"lines": [truth_line(0, 1000, "me", "hello there")]}
         transcript = [line(3100, 4000, "me", "hello there")]
@@ -148,7 +174,8 @@ class RunCaseTest(unittest.TestCase):
     def test_other_output_is_an_error_row(self):
         d = self.make_case("silence", {"lines": []})
         for name, output in [("number", "42"), ("text", "not json"), ("object", '{"lines": []}'),
-                             ("badline", '[{"text": "x"}]')]:
+                             ("badline", '[{"text": "x"}]'),
+                             ("booltime", '[{"start_ms": true, "end_ms": 1, "side": "me", "text": "x"}]')]:
             result = run.run_case(d, self.stub(name, output))
             self.assertEqual(result["status"], "error", name)
             self.assertEqual(result["reason"], "bad JSON from transcribe-file")

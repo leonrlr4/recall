@@ -8,7 +8,8 @@ truth.json and prints a table. Standard library only.
 Metrics per case:
   found   fraction of truth tokens present in a transcript line that overlaps
           the truth line widened by WINDOW_MS on each side (any side); each
-          transcript token matches at most one truth token
+          transcript token matches at most one truth token: first on the
+          truth line's side, then on either side, nearest in time first
   side    of the found tokens, the fraction also present in such a line on
           the truth line's side ("me" or "them")
   leaked  transcript lines on "me" that match a "them" truth line in the
@@ -59,24 +60,51 @@ def score(truth, transcript):
     # Tokens not yet matched to a truth token, per transcript line, so a
     # repeated truth token (的 的 的) needs as many occurrences to be found.
     unused = [Counter(tokenize(t["text"])) for t in transcript]
-    total = found = right_side = 0
-    them_truth = []
-    for tl in truth.get("lines", []):
+    lines = truth.get("lines", [])
+    # Per truth line: its tokens, and the transcript lines in its window,
+    # nearest midpoint first (ties broken by content, so the transcript's
+    # order does not matter).
+    plans = []
+    for tl in lines:
         lo, hi = tl["start_ms"] - WINDOW_MS, tl["end_ms"] + WINDOW_MS
-        near = [i for i, t in enumerate(transcript) if _overlaps(t, lo, hi)]
-        # Lines on the truth line's side are consumed first.
-        near.sort(key=lambda i: transcript[i]["side"] != tl["side"])
-        for tok in tokenize(tl["text"]):
-            total += 1
-            hit = next((i for i in near if unused[i][tok] > 0), None)
-            if hit is None:
-                continue
+        mid = (tl["start_ms"] + tl["end_ms"]) / 2
+        near = sorted(
+            (i for i, t in enumerate(transcript) if _overlaps(t, lo, hi)),
+            key=lambda i: (abs((transcript[i]["start_ms"] + transcript[i]["end_ms"]) / 2 - mid),
+                           transcript[i]["start_ms"], transcript[i]["end_ms"],
+                           transcript[i]["side"], transcript[i]["text"]),
+        )
+        plans.append((tl, tokenize(tl["text"]), near))
+
+    def consume(tok, candidates):
+        hit = next((i for i in candidates if unused[i][tok] > 0), None)
+        if hit is not None:
             unused[hit][tok] -= 1
-            found += 1
-            if transcript[hit]["side"] == tl["side"]:
+        return hit is not None
+
+    # Pass 1 matches on the truth line's side only, across all lines, so a
+    # wrong-side truth line cannot take the token a right-side line needs.
+    # Pass 2 matches what is left against either side.
+    total = found = right_side = 0
+    leftover = []
+    for tl, toks, near in plans:
+        same = [i for i in near if transcript[i]["side"] == tl["side"]]
+        for tok in toks:
+            total += 1
+            if consume(tok, same):
+                found += 1
                 right_side += 1
-        if tl["side"] == "them":
-            them_truth.append((lo, hi, set(tokenize(tl["text"]))))
+            else:
+                leftover.append((tok, near))
+    for tok, near in leftover:
+        if consume(tok, near):
+            found += 1
+
+    them_truth = [
+        (tl["start_ms"] - WINDOW_MS, tl["end_ms"] + WINDOW_MS, set(toks))
+        for tl, toks, _ in plans
+        if tl["side"] == "them"
+    ]
 
     leaked = 0
     for t, toks in tokens:
@@ -114,9 +142,6 @@ def check(result, limits):
     return failures
 
 
-LINE_KEYS = ("start_ms", "end_ms", "side", "text")
-
-
 def parse_transcript(stdout):
     """The lines in transcribe-file's output, which is either a JSON array of
     lines or {"segments": [...]}; None for anything else."""
@@ -128,11 +153,15 @@ def parse_transcript(stdout):
         data = data.get("segments")
     if not isinstance(data, list):
         return None
+    def is_time(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
     ok = all(
         isinstance(line, dict)
         and isinstance(line.get("text"), str)
         and line.get("side") in ("me", "them")
-        and all(isinstance(line.get(k), (int, float)) for k in ("start_ms", "end_ms"))
+        and is_time(line.get("start_ms"))
+        and is_time(line.get("end_ms"))
         for line in data
     )
     return data if ok else None
