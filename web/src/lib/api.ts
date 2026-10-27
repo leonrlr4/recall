@@ -129,6 +129,11 @@ export function status(): Promise<Status> {
   return request(`${BASE}/status`);
 }
 
+/** `POST /api/record/{start|stop|discard}`; the daemon answers 204. */
+export function record(action: 'start' | 'stop' | 'discard'): Promise<void> {
+  return request(`${BASE}/record/${action}`, { method: 'POST' });
+}
+
 export interface SseMessage {
   event: string;
   data: string;

@@ -6,8 +6,23 @@
     "settings": "設定"
   },
   "status": {
-    "recording": "正在錄製 {app}",
-    "recording_any": "錄音中"
+    "idle": "待機",
+    "armed": "偵測到 {app}，即將開始錄音…",
+    "armed_any": "偵測到會議，即將開始錄音…",
+    "recording": "正在錄製 {app} · {elapsed}",
+    "recording_any": "錄音中 · {elapsed}",
+    "finishing": "收尾中…",
+    "processing": "處理中 · {step} {pct}%",
+    "start": "開始錄音",
+    "stop": "停止",
+    "discard": "捨棄",
+    "discard_confirm": "要捨棄這段錄音嗎？",
+    "discard_yes": "捨棄",
+    "failed": "無法變更錄音：{error}",
+    "label": "錄音狀態",
+    "live_recording": "正在錄製 {app}",
+    "live_recording_any": "錄音中",
+    "live_processing": "處理中 · {step}"
   },
   "common": {
     "loading": "載入中…",

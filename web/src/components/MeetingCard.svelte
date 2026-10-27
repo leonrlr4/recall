@@ -19,6 +19,8 @@
   const faces = $derived(row.participants.slice(0, MAX_FACES));
   const more = $derived(row.participants.length - faces.length);
   const progress = $derived(live.progress[row.id]);
+  // Follow progress events between list refetches, which happen on done/failed.
+  const chipState = $derived(progress ? `processing:${progress.step}` : row.state);
 
   /** Splits a hit snippet on its `[match]` markers. */
   function parts(snippet: string): { text: string; hit: boolean }[] {
@@ -42,7 +44,7 @@
   <a class="main" href={meetingPath(row.id)} onclick={link} bind:this={el} data-card>
     <div class="top">
       <h3>{row.title || t('meeting.untitled')}</h3>
-      <StateChip state={row.state} pct={progress?.pct ?? null} />
+      <StateChip state={chipState} pct={progress?.pct ?? null} />
     </div>
     <div class="meta">
       <span class="tnum">{time}</span>

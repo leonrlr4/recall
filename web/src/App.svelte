@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import RecordStatus from './components/RecordStatus.svelte';
   import { t } from './lib/i18n';
-  import { connectLive, live } from './lib/live.svelte';
+  import { connectLive } from './lib/live.svelte';
   import { current, link, onRoute, type Route } from './lib/router';
   import List from './routes/List.svelte';
   import Meeting from './routes/Meeting.svelte';
@@ -41,14 +42,7 @@
         {t('nav.settings')}
       </a>
     </nav>
-    <div class="status" aria-live="polite">
-      {#if live.recording !== null}
-        <span class="rec">
-          <span class="dot"></span>
-          {live.recording ? t('status.recording', { app: live.recording }) : t('status.recording_any')}
-        </span>
-      {/if}
-    </div>
+    <RecordStatus />
   </div>
 </header>
 
@@ -130,36 +124,6 @@
     color: var(--text);
     background: var(--surface-2);
     font-weight: 500;
-  }
-
-  .status {
-    margin-left: auto;
-    font-size: 13px;
-  }
-
-  .rec {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 2px 12px;
-    border-radius: 999px;
-    background: var(--danger-soft);
-    color: var(--live);
-    font-weight: 500;
-  }
-
-  .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--live);
-    animation: pulse 1.6s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    50% {
-      opacity: 0.35;
-    }
   }
 
   .page {

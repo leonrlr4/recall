@@ -6,8 +6,23 @@
     "settings": "Settings"
   },
   "status": {
-    "recording": "Recording {app}",
-    "recording_any": "Recording"
+    "idle": "Idle",
+    "armed": "Detected {app}, starting…",
+    "armed_any": "Meeting detected, starting…",
+    "recording": "Recording {app} · {elapsed}",
+    "recording_any": "Recording · {elapsed}",
+    "finishing": "Finishing…",
+    "processing": "Processing · {step} {pct}%",
+    "start": "Start",
+    "stop": "Stop",
+    "discard": "Discard",
+    "discard_confirm": "Discard this recording?",
+    "discard_yes": "Discard",
+    "failed": "Could not change the recording: {error}",
+    "label": "Recorder",
+    "live_recording": "Recording {app}",
+    "live_recording_any": "Recording",
+    "live_processing": "Processing · {step}"
   },
   "common": {
     "loading": "Loading…",
