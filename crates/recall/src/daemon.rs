@@ -20,11 +20,9 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use async_trait::async_trait;
 use chrono::{DateTime, Local};
 use recall_audio::detect::Detector;
 use recall_audio::state::{Action, DetectEvent, Phase, Session};
-use recall_llm::Llm;
 use recall_server::{AppState, ControlCommand, StatusSnapshot};
 use recall_store::{Config, Event, Index, MeetingId, Speakers, Step};
 use tokio::signal::unix::{SignalKind, signal};
@@ -129,7 +127,7 @@ pub async fn run(config: Config) -> Result<()> {
         index: index.clone(),
         speakers,
         events,
-        llm: llm_or_unavailable(&config),
+        llm: recall_llm::from_config_or_unavailable(&config.llm),
         status: status.clone(),
         control: {
             let tx = tx.clone();
@@ -205,40 +203,6 @@ pub async fn run(config: Config) -> Result<()> {
     remove_file(&socket);
     remove_file(&notify::state_path());
     outcome
-}
-
-/// The configured LLM backend, or, when it cannot be built (the Claude
-/// backend without `ANTHROPIC_API_KEY`, an unknown backend), one that fails
-/// every call with the reason. Recording must not depend on the LLM config;
-/// the worker reports the same error when it loads its engines.
-fn llm_or_unavailable(config: &Config) -> Arc<dyn Llm> {
-    match recall_llm::from_config(&config.llm) {
-        Ok(llm) => llm,
-        Err(err) => {
-            let reason = format!("{err:#}");
-            tracing::error!(err = reason, "the LLM backend is unavailable");
-            Arc::new(UnavailableLlm { reason })
-        }
-    }
-}
-
-struct UnavailableLlm {
-    reason: String,
-}
-
-#[async_trait]
-impl Llm for UnavailableLlm {
-    async fn complete(&self, _: &str, _: &str) -> Result<String> {
-        bail!("{}", self.reason)
-    }
-
-    async fn stream(&self, _: &str, _: &str, _: tokio::sync::mpsc::Sender<String>) -> Result<()> {
-        bail!("{}", self.reason)
-    }
-
-    fn name(&self) -> String {
-        "unavailable".into()
-    }
 }
 
 /// Takes an exclusive lock on `<runtime dir>/daemon.lock`, failing if another
@@ -546,18 +510,6 @@ fn remove_file(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn bad_llm_config_gives_an_llm_that_fails_with_the_reason() {
-        let mut config = Config::default();
-        config.llm.backend = "nonsense".into();
-        let llm = llm_or_unavailable(&config);
-        let err = llm.complete("s", "u").await.unwrap_err();
-        assert!(
-            format!("{err:#}").contains("unknown LLM backend"),
-            "{err:#}"
-        );
-    }
 
     #[test]
     fn death_window_allows_five_deaths_a_minute() {
