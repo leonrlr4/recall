@@ -1,185 +1,287 @@
-# recall 設計
+# recall design
 
 > Historical record, frozen 2026-10-27. Source code is authoritative; where
 > this document and the code disagree, the code wins.
 
-## 目的
+## Purpose
 
-recall 記錄這台電腦上開的每一場線上會議：自動偵測開始與結束，錄下麥克風和系統輸出兩條音軌，可選錄影，會後在本機轉成繁體中文與英文混排的逐字稿，分辨講者並記住每個人的聲紋，用本地或雲端 LLM 產出摘要、決策、待辦，放進一個可搜尋的網頁檔案庫。音訊和文字都留在本機，除非使用者明確選擇 Claude API 當摘要後端。
+recall records every online meeting held on this computer. It detects when a
+meeting starts and ends, records the microphone and the system output as two
+tracks, optionally records the screen, and after the meeting turns the audio
+into a transcript in Traditional Chinese and English (mixed within sentences),
+tells speakers apart, remembers each person's voice, and produces a summary,
+decisions and action items with a local or cloud LLM. Everything lands in a
+searchable local web archive. Audio and text stay on the machine unless the
+user explicitly picks the Claude API as the summary backend.
 
-使用者是 Leon，會議多在 Google Meet（Brave）、Slack huddle、Discord，語言是台灣國語與英文混雜。效能目標是 Rust 單一 binary，不依賴 Python。
+The first user is Leon. Meetings happen in Google Meet (in Brave), Slack
+huddles and Discord. Speech is Taiwanese Mandarin mixed with English. The
+performance goal is a single Rust binary with no Python at runtime.
 
-### 成功標準
+### Success criteria
 
-- 開會不用按任何鍵，會後 10 分鐘內（60 分鐘會議）網頁上有逐字稿和摘要。
-- 中英混雜句子的錯誤率低於 Whisper large-v3 一半（以 bench 的 ASCEND 類案例量）。
-- 「我」和「別人」100% 分對；別人之間的講者在第二次開會後自動對上名字。
-- daemon 閒置時 CPU 0%，錄音時單核 2% 以內。
-- 任何一步失敗都保留音檔，能從該步重跑。
+- No key press needed during a meeting. For a 60 minute meeting, the
+  transcript and summary are on the web page within 10 minutes of the end.
+- On code-switched sentences the error rate is below half of Whisper
+  large-v3 (measured on the bench's ASCEND-style cases).
+- "Me" and "them" are attributed with 100% accuracy. Remote speakers are
+  matched to names automatically from their second meeting on.
+- The daemon uses 0% CPU when idle and under 2% of one core while recording.
+- Any failed step keeps the audio and can be rerun from that step.
 
-### 不做
+### Out of scope
 
-- 行事曆連動（討論過，暫緩）。
-- 雲端同步、多使用者。
-- Tauri 外殼（網頁先行，之後可薄薄包一層指向本機網址，不改 daemon 和前端）。
+- Calendar integration (discussed, deferred).
+- Cloud sync, multiple users.
+- A Tauri shell. The web page comes first; a thin shell pointing at the local
+  URL can be added later without changing the daemon or the frontend.
 
-## 既有專案的位置
+## Where this sits among existing projects
 
-調查了 Meetily、Screenpipe、Anarlog、Vibe、Minutes、omarchy-meeting-recorder、mnemosyne 等開源專案，和 Granola、Otter、Fathom、飛書妙記等商業產品。沒有一個做中英混雜 STT 或繁體輸出，沒有一個在 Linux 上真的能從 PipeWire 偵測會議，所有 Linux 選項都是「一場會議的工作台」而非「所有會議的檔案庫」。
+Surveyed open-source projects (Meetily, Screenpipe, Anarlog, Vibe, Minutes,
+omarchy-meeting-recorder, mnemosyne) and commercial products (Granola, Otter,
+Fathom, Feishu Minutes). None ships a code-switching Chinese/English STT engine
+or Traditional Chinese output. None detects meetings from PipeWire on Linux.
+Every Linux option is a single-meeting workbench, not an archive of all
+meetings.
 
-omarchy-meeting-recorder（GTK4，Rust）是最接近的，錄音與轉錄品質認真，值得照抄：錄前即時波形、回音規則、崩潰復原、可編輯逐字稿、bench 套件。它缺列表、搜尋、摘要、自動偵測、中文。決定從頭做，把它和 Anarlog 的 `crates/audio-sync` 當參考碼。
+omarchy-meeting-recorder (GTK4, Rust) is the closest. Its recording and
+transcription are done carefully and are worth copying: live meters before
+recording, the echo rule, crash recovery, an editable transcript, a bench
+suite. It lacks a meeting list, search, summaries, auto-detection and Chinese.
+Decision: build from scratch, using it and Anarlog's `crates/audio-sync` as
+reference code.
 
-## 存放格式
+## Storage format
 
-每場會議一個目錄，預設在 `~/Meetings/`，目錄名是開始時間加標題：
+One directory per meeting, by default under `~/Meetings/`, named by start time
+and title:
 
 ```
 ~/Meetings/2026-10-27 14:30 Biobuild weekly/
-├── meeting.md      摘要與逐字稿，Obsidian 直接讀
-├── audio.opus      立體聲 48 kHz，左聲道麥克風（我），右聲道系統輸出（別人）
-├── screen.mp4      有開錄影才有
-├── meeting.json    機器用：時間、來源 app、講者 id、段落時間戳、各步狀態、模型版本
-└── .cache/         錄製中的 20 秒分段暫存，完成後清掉
+├── meeting.md      summary and transcript; Obsidian reads it directly
+├── audio.opus      stereo 48 kHz, left = microphone (me), right = system output (them)
+├── screen.mp4      only when screen recording was on
+├── meeting.json    machine data: times, source app, speaker ids, segment timestamps, step states, model versions
+└── .cache/         20 second chunks while recording; cleared when done
 ```
 
-`meeting.md` 開頭是 YAML frontmatter（title、date、duration、participants、source_app、tags），接著 `## 摘要`、`## 決策`、`## 待辦`（每條帶負責人與期限）、`## 章節`、`## 逐字稿`。逐字稿每行 `[01:32] **Tom** 這段 export 會 timeout`。中文一律繁體，英文詞保留原樣。
+`meeting.md` opens with YAML frontmatter (title, date, duration, participants,
+source_app, tags), then `## Summary`, `## Decisions`, `## Action items` (each
+with owner and due date), `## Chapters`, `## Transcript`. Each transcript line
+is `[01:32] **Tom** 這段 export 會 timeout`. Chinese is always Traditional;
+English words stay as spoken.
 
-講者是全域實體：
+Speakers are global entities:
 
 ```
 ~/.local/share/recall/
-├── speakers.json   id → 名字、別名、多個聲紋 embedding
-├── index.sqlite    FTS5 全文索引與列表查詢；可隨時從目錄重建
-└── models/         Breeze ggml、sherpa 模型
+├── speakers.json   id → name, aliases, several voice embeddings
+├── index.sqlite    FTS5 full-text index and list queries; rebuildable from the directories at any time
+└── models/         Breeze ggml, sherpa models
 ```
 
-`meeting.json` 只存講者 id。改名在 `speakers.json` 改一次，daemon 重寫所有相關 `meeting.md`。SQLite 只是索引，真相永遠是目錄裡的檔案，rsync、git、Obsidian 都能直接用。
+`meeting.json` stores only speaker ids. A rename happens once in
+`speakers.json`, and the daemon rewrites every affected `meeting.md`. SQLite is
+only an index; the directories are the source of truth, so rsync, git and
+Obsidian all work on them directly.
 
-設定檔 `~/.config/recall/config.toml`：會議目錄、錄影開關、偵測白名單、debounce 秒數、LLM 後端（`ollama` 或 `claude`）與模型名、摘要語言、UI 語言、STT 引擎。
+Config at `~/.config/recall/config.toml`: meetings directory, screen recording
+on/off, detection allowlist, debounce seconds, LLM backend (`ollama` or
+`claude`) and model name, summary language, UI language, STT engine.
 
-## daemon 狀態機與偵測
+## Daemon state machine and detection
 
-`recall daemon` 是 systemd user service，一個 process 四條線：PipeWire 監聽、錄製、處理佇列、HTTP。
+`recall daemon` runs as a systemd user service: one process with four tasks,
+the PipeWire watcher, the recorder, the processing queue and HTTP.
 
 ```
-Idle ──白名單 app 開麥克風──▶ Armed ──撐過 8 秒──▶ Recording
-Idle ──快速鍵 start────────────────────────────────▶ Recording
-Armed ──8 秒內關掉（權限探測）──▶ Idle
-Recording ──麥克風關閉 30 秒或快速鍵 stop──▶ Finishing ──寫完 audio.opus──▶ Processing ──▶ Idle
-Recording ──快速鍵 discard──▶ Idle（刪暫存）
+Idle ──allowlisted app opens the mic──▶ Armed ──survives 8 s──▶ Recording
+Idle ──hotkey start───────────────────────────────────────────▶ Recording
+Armed ──closed within 8 s (permission probe)──▶ Idle
+Recording ──mic closed for 30 s or hotkey stop──▶ Finishing ──audio.opus written──▶ Processing ──▶ Idle
+Recording ──hotkey discard──▶ Idle (cache deleted)
 ```
 
-偵測規則：
+Detection rules:
 
-- 觸發：PipeWire registry 出現 `Stream/Input/Audio` 節點，且 `application.process.binary` 在白名單（預設 brave、chromium、firefox、zoom、slack、discord、teams）。忽略 recall 自己的節點。
-- Armed 期間已在暫存錄音，正式開始時前 8 秒不會少。
-- 結束要節點消失超過 30 秒，避免對方斷線重連被切成兩場。
-- 短於 2 分鐘的錄音自動丟掉。
-- 同時只錄一場，第二個 app 開麥克風併入同一場。
-- PulseAudio-only 系統走 `libpulse-binding` 的 source_output 訂閱，同一套規則。
+- Trigger: a `Stream/Input/Audio` node appears in the PipeWire registry whose
+  `application.process.binary` is on the allowlist (default: brave, chromium,
+  firefox, zoom, slack, discord, teams). recall's own nodes are ignored.
+- The cache already records during Armed, so the first 8 seconds are not lost.
+- End requires the node to be gone for more than 30 seconds, so a remote
+  reconnect does not split one meeting in two.
+- Recordings shorter than 2 minutes are discarded automatically.
+- Only one meeting records at a time; a second app opening the mic joins the
+  current one.
+- PulseAudio-only systems use `libpulse-binding` source_output subscriptions
+  with the same rules.
 
-快速鍵 `recall start` / `stop` / `discard` 透過 `$XDG_RUNTIME_DIR/recall/control.sock` 送指令，任何桌面都能綁。
+Hotkeys `recall start` / `stop` / `discard` send commands over
+`$XDG_RUNTIME_DIR/recall/control.sock`, so any desktop can bind them.
 
-錄製中：
+While recording:
 
-- 兩條 `pipewire` crate 的 stream：麥克風抓預設 source，系統音對預設 sink 設 `stream.capture.sink = true`。要求 F32 48 kHz，由 PipeWire 重取樣。
-- 跟著 `default.audio.sink` metadata 切換，換耳機不斷；某軌短暫沒資料就補靜音，兩軌對齊。
-- 每 20 秒一段寫進 `.cache/`，崩潰只掉最後 20 秒；下次啟動發現未完成錄音就接續處理。
-- 錄影開啟時 spawn `gpu-screen-recorder -w portal`，用 restore token 免對話框；token 失效就發通知請點一次，音訊照錄。
-- 桌面通知：開始「錄製中：Google Meet」、結束「處理中」、完成「摘要好了」附網頁連結。狀態同時寫 `$XDG_RUNTIME_DIR/recall/state.json` 給 bar 用。
+- Two `pipewire` crate streams: the mic captures the default source; system
+  audio targets the default sink with `stream.capture.sink = true`. Both ask
+  for F32 at 48 kHz and let PipeWire resample.
+- Follows the `default.audio.sink` metadata, so switching to a headset keeps
+  working. A track that briefly delivers nothing gets silence, keeping the two
+  tracks aligned.
+- Writes a chunk to `.cache/` every 20 seconds, so a crash loses at most 20
+  seconds. On the next start an unfinished recording is processed.
+- With screen recording on, spawns `gpu-screen-recorder -w portal` using a
+  restore token to avoid the dialog. When the token fails, a notification asks
+  for one click; audio keeps recording regardless.
+- Desktop notifications: "Recording: Google Meet" on start, "Processing" on
+  end, "Summary ready" with the web link on completion. State is also written
+  to `$XDG_RUNTIME_DIR/recall/state.json` for bars.
 
-處理佇列存在 SQLite，一次跑一個，daemon 重啟接著跑。
+The processing queue lives in SQLite, runs one job at a time and resumes after
+a daemon restart.
 
-## 處理管線
+## Processing pipeline
 
-六步依序跑，每步輸出寫進 `meeting.json`，失敗停在那步，網頁與 CLI 能從該步重跑。
+Six steps in order. Each writes its output to `meeting.json`; a failure stops
+at that step, and the web page and CLI can rerun from it.
 
-1. **切段**：兩聲道各跑 Silero VAD（sherpa-onnx），只送有人聲區段。回音規則：左聲道只在右聲道有聲時才有聲的區段當回音丟掉。
-2. **轉錄**：`whisper-rs`（Vulkan）跑 Breeze-ASR-25 ggml q8_0，兩聲道分開轉，語言提示 `zh`，再過 OpenCC `s2tw`。詞級時間戳用 DTW。引擎是 trait，第二個實作是 sherpa-onnx 跑 TEA-ASR-1.1，等 spike 驗證匯出與速度後再決定預設。
-3. **分講者**：只跑右聲道，sherpa-onnx 的 pyannote segmentation-3.0 + CAM++ embedding。左聲道固定是「我」。輸出 Remote N 和每個 cluster 的 embedding。
-4. **對名字**，依序填：聲紋比對 `speakers.json`（cosine 門檻先 0.6，用實際錄音校準，每人存多個 embedding，只在高信心時新增）；Meet 瀏覽器擴充送來的發言者事件做多數決（第一版不做擴充，格式先留欄位）；都沒對到留 Remote N，使用者在網頁改名後 embedding 存進此人。
-5. **摘要**：帶講者的逐字稿送 LLM，固定輸出 JSON：一句話摘要、摘要段、決策、待辦（事項、負責人、期限）、章節（開始時間、標題）。Prompt 要求繁體、英文術語與人名原樣。超過上下文按章節分批再合併。後端 `ollama`（預設 `qwen3.6:35b-a3b`）或 `claude`（API key 從環境變數）。
-6. **寫檔**：產生 `meeting.md`，更新索引，發通知。
+1. **Segment**: Silero VAD (sherpa-onnx) on each channel; only voiced regions
+   go to transcription. Echo rule: a left-channel region that is voiced only
+   while the right channel is voiced is echo and is dropped.
+2. **Transcribe**: `whisper-rs` (Vulkan) with Breeze-ASR-25 ggml q8_0,
+   channels transcribed separately, language hint `zh`, then OpenCC `s2tw`.
+   Word timestamps from DTW. The engine is a trait; the second implementation
+   is sherpa-onnx with TEA-ASR-1.1, to become the default only after a spike
+   confirms the export works and is fast enough.
+3. **Diarize**: right channel only, with sherpa-onnx's pyannote
+   segmentation-3.0 plus CAM++ embeddings. The left channel is always "me".
+   Output is Remote N plus one embedding per cluster.
+4. **Name speakers**, in order: voiceprint match against `speakers.json`
+   (cosine threshold starts at 0.6, calibrated on real recordings; several
+   embeddings per person, added only on high-confidence matches); majority
+   vote over active-speaker events from a Meet browser extension (not built in
+   the first version, but the format reserves the field); otherwise Remote N
+   stays, and renaming on the web page stores the embedding under that person.
+5. **Summarize**: the speaker-labelled transcript goes to the LLM, which
+   returns fixed JSON: one-line summary, summary paragraph, decisions, action
+   items (item, owner, due), chapters (start, title). The prompt demands
+   Traditional Chinese with English terms and names kept as is. Transcripts
+   over the context window are summarized per chapter and merged. Backends:
+   `ollama` (default `qwen3.6:35b-a3b`) or `claude` (API key from the
+   environment).
+6. **Write**: generate `meeting.md`, update the index, notify.
 
-效能目標（60 分鐘會議，Intel Arc B390）：轉錄 5 分鐘內、diarization 2 分鐘內、本地摘要 2 分鐘內。
+Performance targets (60 minute meeting, Intel Arc B390): transcription under
+5 minutes, diarization under 2, local summary under 2.
 
-Bench：`bench/fixtures/` 每案例音檔加 `truth.json`，`thresholds.json` 定門檻，CI 跑。案例抄 omarchy-meeting-recorder 的十個，加純國語、中英混雜、台灣口音英文三個。
+Bench: `bench/fixtures/` holds each case's audio and `truth.json`;
+`thresholds.json` sets the minimums; CI runs it. Cases copy
+omarchy-meeting-recorder's ten and add three: pure Mandarin, code-switched
+Mandarin/English, Taiwanese-accented English.
 
-## 網頁與 API
+## Web page and API
 
-`axum` 在 `127.0.0.1:7474`，靜態檔 `rust-embed` 編進 binary。前端 Svelte 5 + Vite，`web/dist/` 進 repo，`cargo build` 不需要 Node。
+`axum` on `127.0.0.1:7474`, static files embedded with `rust-embed`. Frontend
+is Svelte 5 + Vite; `web/dist/` is committed so `cargo build` needs no Node.
 
-介面字串在 `web/src/i18n/{zh-TW,en}.json`，跟瀏覽器語系，設定頁可鎖定。摘要語言是另一個設定。
+UI strings live in `web/src/i18n/{zh-TW,en}.json`, follow the browser locale,
+and can be pinned in settings. Summary language is a separate setting.
 
-頁面：
+Pages:
 
-1. `/` 會議列表：搜尋框、篩選（來源 app、參與者、日期）；依日期分組的卡片，顯示標題、時長、參與者縮寫、一句摘要、處理狀態。
-2. `/m/:id` 會議頁三欄：左摘要、決策、待辦、章節；中逐字稿，講者有色，點句播放，hover 改字、換講者、刪除；右上播放器（波形上下分我與別人，章節是刻度，有錄影時換影片），右下「問這場會議」。
-3. `/people` 講者：名字、別名、出現過的會議、聲紋樣本數；改名即時套用；可合併。
-4. `/settings` 設定表單，加「測試錄音」：錄 5 秒顯示兩聲道波形。
+1. `/` meeting list: search box, filters (source app, participant, date);
+   cards grouped by date showing title, duration, participant initials,
+   one-line summary, processing state.
+2. `/m/:id` meeting page, three columns: left summary, decisions, action items,
+   chapters; middle transcript with coloured speakers, click a line to play
+   from it, hover for edit, next speaker, delete; right top player (waveform
+   with me above and them below, chapters as ticks, replaced by the video when
+   present), right bottom "ask this meeting".
+3. `/people` speakers: name, aliases, meetings they appear in, number of voice
+   samples; renaming applies everywhere immediately; two people can be merged.
+4. `/settings` form view of the config, plus "test recording": record 5
+   seconds and show both channels' waveforms.
 
-API（JSON，只綁本機）：
+API (JSON, bound to localhost only):
 
-| 路徑 | 用途 |
+| Path | Purpose |
 |---|---|
-| `GET /api/meetings?q=&app=&from=` | 列表與全文搜尋 |
-| `GET/PATCH /api/meetings/:id` | 讀取、改標題、改段落 |
-| `POST /api/meetings/:id/rerun/:step` | 從某步重跑 |
-| `GET /api/meetings/:id/audio` | Range 串流 |
-| `POST /api/meetings/:id/ask` | 問答，SSE |
-| `GET/PATCH /api/people/:id` | 講者改名、合併 |
-| `GET /api/events` | SSE：錄製狀態、處理進度 |
+| `GET /api/meetings?q=&app=&from=` | list and full-text search |
+| `GET/PATCH /api/meetings/:id` | read, rename, edit segments |
+| `POST /api/meetings/:id/rerun/:step` | rerun from a step |
+| `GET /api/meetings/:id/audio` | Range streaming |
+| `POST /api/meetings/:id/ask` | Q&A, SSE |
+| `GET/PATCH /api/people/:id` | rename, merge speakers |
+| `GET /api/events` | SSE: recording state, processing progress |
 
-CLI 用同一組 API：`recall list`、`recall show <id>`、`recall rerun <id> summary`。
+The CLI uses the same API: `recall list`, `recall show <id>`,
+`recall rerun <id> summary`.
 
-搜尋用 FTS5 `trigram` tokenizer，中文免分詞；結果附命中句和時間戳，點了跳播。
+Search uses FTS5 with the `trigram` tokenizer, so Chinese needs no word
+segmentation. Results carry the matching line and timestamp; clicking jumps
+to playback.
 
-鍵盤：列表 `/` 搜尋、`j k` 上下、`Enter` 開；會議頁 `空白` 播放暫停、`[ ]` 前後句、`e` 改當前句、`s` 換講者。
+Keyboard: list `/` search, `j k` move, `Enter` open; meeting page `space`
+play/pause, `[ ]` previous/next line, `e` edit current line, `s` next
+speaker.
 
-## 專案結構
+## Project layout
 
-Cargo workspace：
+Cargo workspace:
 
 ```
 recall/
 ├── crates/
-│   ├── recall-audio      PipeWire 偵測、雙軌擷取、Opus 寫檔
-│   ├── recall-pipeline   VAD、轉錄、diarization、對名字、摘要
-│   ├── recall-store      會議目錄讀寫、speakers.json、SQLite 索引
-│   ├── recall-llm        Ollama / Claude，同一個 trait
-│   ├── recall-server     axum API、SSE、靜態檔
-│   └── recall            binary：daemon、CLI、systemd 整合
-├── web/                  Svelte，dist/ 進 repo
+│   ├── recall-audio      PipeWire detection, two-track capture, Opus writing
+│   ├── recall-pipeline   VAD, transcription, diarization, naming, summary
+│   ├── recall-store      meeting directories, speakers.json, SQLite index
+│   ├── recall-llm        Ollama / Claude behind one trait
+│   ├── recall-server     axum API, SSE, static files
+│   └── recall            binary: daemon, CLI, systemd integration
+├── web/                  Svelte; dist/ is committed
 ├── bench/
 └── docs/decisions/
 ```
 
-sherpa-onnx 和 whisper-rs 各自帶 runtime（ONNX Runtime、ggml），不衝突。不同時引入第二個帶 ONNX Runtime 的 crate（例如 pyannote-rs），Minutes 專案為此得把 sherpa 拆成 dlopen 的 cdylib。
+sherpa-onnx and whisper-rs each bring their own runtime (ONNX Runtime, ggml)
+and do not collide. Do not add a second crate that vendors ONNX Runtime (such
+as pyannote-rs): Minutes had to move sherpa into a dlopen'ed cdylib for that
+reason.
 
-## 測試
+## Testing
 
-- 單元：store 格式往返、pipeline 純函數（回音規則、時間軸合併、名字投票）、LLM JSON 解析、i18n 檔案鍵一致。
-- 整合：bench 音檔跑整條管線，不碰 PipeWire。
-- 錄音：`recall selftest` 播音到 sink 同時錄 monitor；CI 用 PipeWire null sink。
-- 偵測：`pw-cli` 建假 capture 節點測狀態機。
+- Unit: store format round-trips, pure pipeline functions (echo rule,
+  timeline merge, name voting), LLM JSON parsing, i18n key parity.
+- Integration: the bench audio through the whole pipeline, without PipeWire.
+- Recording: `recall selftest` plays a tone to the sink while capturing the
+  monitor; CI uses a PipeWire null sink.
+- Detection: fake capture nodes created with `pw-cli` drive the state machine.
 
-## 階段
+## Phases
 
-| 階段 | 交付 |
+| Phase | Deliverable |
 |---|---|
-| 1 | daemon 偵測、雙軌錄音、快速鍵、通知，產出 audio.opus |
-| 2 | 轉錄、我/別人分軌、meeting.md、列表與會議頁、zh-TW/en UI |
-| 3 | diarization、聲紋、講者頁、摘要與待辦、問答 |
-| 4 | 錄影、Meet 擴充、MCP server、TEA-ASR spike |
-| 5 | 即時字幕（sherpa-onnx 串流 X-ASR，會後再用階段 2 引擎重跑） |
+| 1 | daemon detection, two-track recording, hotkeys, notifications; produces audio.opus |
+| 2 | transcription, me/them by track, meeting.md, list and meeting pages, zh-TW/en UI |
+| 3 | diarization, voiceprints, people page, summary and action items, Q&A |
+| 4 | screen recording, Meet extension, MCP server, TEA-ASR spike |
+| 5 | live captions (sherpa-onnx streaming X-ASR, re-transcribed with the phase 2 engine afterwards) |
 
-每階段結束都能用；階段 1 後開始累積音檔，後面換模型可全部重跑。
+Each phase is usable on its own. After phase 1 audio accumulates, and later
+model changes can reprocess everything.
 
-## 已知風險
+## Known risks
 
-- Diarization 在中文多人重疊的 DER 約 12 到 20%，相似聲音會被合併；靠網頁的換講者與合併修。
-- 瀏覽器 WebRTC 權限探測會開關麥克風，靠 8 秒 debounce；Brave 的其他麥克風用途（語音輸入）會被誤錄，靠 2 分鐘下限與 discard 鍵。
-- xdph 的 restore token 可能回空，錄影第一次要點一次。
-- `pipewire` crate 0.10 pre-1.0，API 會變。
-- Breeze 用 large-v2 解碼器，比 turbo 慢；B390 上實測後若超過目標，改 TEA-ASR 或 SenseVoice。
-- 錄下別人的聲音與聲紋涉及同意，使用者自行負責。
+- Diarization DER on overlapping Mandarin speech is around 12 to 20%, and
+  similar voices get merged; the web page's next-speaker and merge actions are
+  the fix.
+- Browser WebRTC permission probes open and close the mic; the 8 second
+  debounce handles that. Other mic uses in Brave (voice input) will be
+  recorded by mistake; the 2 minute minimum and the discard hotkey handle that.
+- xdph restore tokens may come back empty; the first screen recording may need
+  one click.
+- The `pipewire` crate is pre-1.0 (0.10) and its API changes.
+- Breeze uses the large-v2 decoder and is slower than turbo; if the B390
+  misses the target, switch to TEA-ASR or SenseVoice.
+- Recording other people's voices and voiceprints needs their consent; that is
+  on the user.
