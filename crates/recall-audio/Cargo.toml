@@ -10,6 +10,9 @@ recall-store.workspace = true
 anyhow.workspace = true
 ogg = "0.9"
 opus = "0.4"
+# v0_3_44 exposes the `target.object` key used to follow the default sink.
+pipewire = { version = "0.10", features = ["v0_3_44"] }
+serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
