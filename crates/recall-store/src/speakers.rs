@@ -119,6 +119,18 @@ impl Speakers {
         id
     }
 
+    /// Adds `person` as is, id included, unless someone already has that
+    /// id; returns whether it was added. Used to carry new voices from a
+    /// pipeline run's copy of the registry into the shared one without
+    /// touching the people the shared copy already has.
+    pub fn insert_person(&mut self, person: Person) -> bool {
+        if self.get(&person.id).is_some() {
+            return false;
+        }
+        self.people.push(person);
+        true
+    }
+
     pub fn rename(&mut self, id: &SpeakerId, name: &str) -> Result<()> {
         let Some(person) = self.get_mut(id) else {
             bail!("no speaker with id {:?}", id.0);
@@ -197,6 +209,23 @@ mod tests {
 
     fn id(s: &str) -> SpeakerId {
         SpeakerId(s.into())
+    }
+
+    #[test]
+    fn insert_person_keeps_existing_ids() {
+        let mut run = Speakers::default();
+        let tom = run.add("Tom", Some(vec![1.0, 0.0]));
+        let mut shared = Speakers::default();
+        shared.rename(&SpeakerId(ME.into()), "Leon").unwrap();
+
+        for person in run.people().to_vec() {
+            shared.insert_person(person);
+        }
+        assert_eq!(shared.people().len(), 2);
+        assert_eq!(shared.me().name, "Leon");
+        assert_eq!(shared.get(&tom), run.get(&tom));
+        assert!(!shared.insert_person(run.get(&tom).unwrap().clone()));
+        assert_eq!(shared.people().len(), 2);
     }
 
     #[test]

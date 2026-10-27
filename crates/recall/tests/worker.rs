@@ -12,8 +12,10 @@ use recall::worker::{INTERRUPTED, Worker, sweep_interrupted};
 use recall_llm::Llm;
 use recall_pipeline::runner::Engines;
 use recall_pipeline::{Diarizer, Region, Transcriber, Turn, Utterance, Vad};
+use recall_store::speakers::ME;
 use recall_store::{
-    Config, Event, Index, ListFilter, Meeting, MeetingDir, Speakers, Step, StepState,
+    Config, Event, Index, ListFilter, LlmConfig, Meeting, MeetingDir, SpeakerId, Speakers, Step,
+    StepState,
 };
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
@@ -53,11 +55,18 @@ impl Transcriber for FakeTranscriber {
     }
 }
 
-/// One new remote voice for the whole recording.
-struct FakeDiarizer;
+/// One new remote voice for the whole recording. Runs `during` first, to
+/// act in the middle of a run.
+#[derive(Default)]
+struct FakeDiarizer {
+    during: Option<Box<dyn FnMut() + Send>>,
+}
 
 impl Diarizer for FakeDiarizer {
     fn diarize(&mut self, samples16k: &[f32]) -> Result<(Vec<Turn>, Vec<Vec<f32>>)> {
+        if let Some(during) = &mut self.during {
+            during();
+        }
         let end_ms = u32::try_from(samples16k.len() / 16).unwrap();
         Ok((
             vec![Turn {
@@ -67,6 +76,19 @@ impl Diarizer for FakeDiarizer {
             }],
             vec![vec![0.0, 1.0, 0.0]],
         ))
+    }
+}
+
+/// Panics on every call.
+struct PanickingTranscriber;
+
+impl Transcriber for PanickingTranscriber {
+    fn transcribe(&mut self, _: &[f32], _: &[Region], _: &str) -> Result<Vec<Utterance>> {
+        panic!("whisper blew up");
+    }
+
+    fn model_name(&self) -> String {
+        "panicking".into()
     }
 }
 
@@ -158,24 +180,43 @@ fn write_audio(path: &Path) {
     assert!(status.success());
 }
 
+fn fake_engines(llm_fails: bool) -> Engines {
+    Engines {
+        vad: Box::new(FakeVad),
+        transcriber: Box::new(FakeTranscriber),
+        diarizer: Box::new(FakeDiarizer::default()),
+        llm: Arc::new(FakeLlm { fail: llm_fails }),
+    }
+}
+
 fn worker(f: &Fixture, llm_fails: bool) -> Worker {
+    worker_with(f, move || Ok(fake_engines(llm_fails)))
+}
+
+/// A worker whose engines come from `make`, called on each load.
+fn worker_with(f: &Fixture, make: impl Fn() -> Result<Engines> + Send + Sync + 'static) -> Worker {
+    let make = Arc::new(make);
     Worker {
         config: f.config.clone(),
         index: f.index.clone(),
         speakers: f.speakers.clone(),
         events: f.events.clone(),
         load: Box::new(move |_| {
-            Box::pin(async move {
-                Ok(Engines {
-                    vad: Box::new(FakeVad),
-                    transcriber: Box::new(FakeTranscriber),
-                    diarizer: Box::new(FakeDiarizer),
-                    llm: Arc::new(FakeLlm { fail: llm_fails }),
-                })
-            })
+            let make = make.clone();
+            Box::pin(async move { make() })
         }),
         notifications: false,
     }
+}
+
+fn state(f: &Fixture) -> String {
+    f.index
+        .lock()
+        .unwrap()
+        .list(&ListFilter::default())
+        .unwrap()[0]
+        .state
+        .clone()
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -313,4 +354,124 @@ fn sweep_fails_steps_left_running() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn unbuildable_llm_fails_only_the_summary() {
+    let f = fixture();
+    let mut worker = worker_with(&f, || {
+        let mut engines = fake_engines(false);
+        engines.llm = recall_llm::from_config_or_unavailable(&LlmConfig {
+            backend: "nonsense".into(),
+            ..LlmConfig::default()
+        });
+        Ok(engines)
+    });
+
+    assert!(worker.run_next(&runtime(), &mut None).unwrap());
+
+    assert_eq!(state(&f), "failed:summarize");
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    assert!(!meeting.segments.is_empty());
+    match &meeting.steps[&Step::Summarize] {
+        StepState::Failed { error, .. } => {
+            assert!(error.contains("unknown LLM backend"), "{error}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn engine_load_failure_marks_the_first_step_failed() {
+    let f = fixture();
+    let mut rx = f.events.subscribe();
+    let mut worker = worker_with(&f, || bail!("model file is corrupt"));
+
+    assert!(worker.run_next(&runtime(), &mut None).unwrap());
+
+    assert_eq!(state(&f), "failed:segment");
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    match &meeting.steps[&Step::Segment] {
+        StepState::Failed { error, .. } => assert!(error.contains("corrupt"), "{error}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        drain(&mut rx).last(),
+        Some(Event::Failed {
+            step: Step::Segment,
+            ..
+        })
+    ));
+    assert_eq!(f.index.lock().unwrap().active_job(&f.dir.id).unwrap(), None);
+}
+
+#[test]
+fn rename_during_a_run_survives_the_speakers_merge() {
+    let f = fixture();
+    let shared = f.speakers.clone();
+    let path = f.config.speakers_path();
+    let me = SpeakerId(ME.into());
+    let mut worker = worker_with(&f, move || {
+        let shared = shared.clone();
+        let path = path.clone();
+        let mut engines = fake_engines(false);
+        engines.diarizer = Box::new(FakeDiarizer {
+            // What PATCH /api/people does, after the run took its copy.
+            during: Some(Box::new(move || {
+                let mut speakers = shared.lock().unwrap();
+                speakers.rename(&SpeakerId(ME.into()), "Leon").unwrap();
+                speakers.save(&path).unwrap();
+            })),
+        });
+        Ok(engines)
+    });
+
+    assert!(worker.run_next(&runtime(), &mut None).unwrap());
+    assert_eq!(state(&f), "done");
+
+    let on_disk = Speakers::load(&f.config.speakers_path()).unwrap();
+    let in_memory = f.speakers.lock().unwrap().clone();
+    assert_eq!(on_disk, in_memory);
+    assert_eq!(in_memory.name_of(&me), "Leon");
+    assert_eq!(in_memory.people().len(), 2, "{in_memory:?}");
+}
+
+#[test]
+fn run_failing_at_summarize_still_adds_its_new_voices() {
+    let f = fixture();
+    let mut worker = worker(&f, true);
+
+    assert!(worker.run_next(&runtime(), &mut None).unwrap());
+
+    assert_eq!(state(&f), "failed:summarize");
+    let remote = Meeting::load(&f.dir.path()).unwrap().clusters[0]
+        .speaker
+        .clone()
+        .unwrap();
+    assert!(f.speakers.lock().unwrap().get(&remote).is_some());
+    let on_disk = Speakers::load(&f.config.speakers_path()).unwrap();
+    assert!(on_disk.get(&remote).is_some());
+}
+
+#[test]
+fn panicking_job_is_failed_and_the_worker_goes_on() {
+    let f = fixture();
+    let mut worker = worker_with(&f, || {
+        let mut engines = fake_engines(false);
+        engines.transcriber = Box::new(PanickingTranscriber);
+        Ok(engines)
+    });
+    let mut engines = None;
+
+    assert!(worker.run_next(&runtime(), &mut engines).unwrap());
+
+    assert!(engines.is_none(), "engines are reloaded after a panic");
+    assert_eq!(state(&f), "failed:transcribe");
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    match &meeting.steps[&Step::Transcribe] {
+        StepState::Failed { error, .. } => assert!(error.contains("whisper blew up"), "{error}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.index.lock().unwrap().active_job(&f.dir.id).unwrap(), None);
+    assert!(!worker.run_next(&runtime(), &mut engines).unwrap());
 }
