@@ -20,7 +20,7 @@ serde_json.workspace = true
 tokio.workspace = true
 toml = "1"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["fs", "cors"] }
+tower-http = { version = "0.6", features = ["fs"] }
 tracing.workspace = true
 
 [dev-dependencies]

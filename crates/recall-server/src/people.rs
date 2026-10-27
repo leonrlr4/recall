@@ -91,6 +91,11 @@ pub async fn patch(
     if speakers.get(&id).is_none() {
         return Err(ApiError::not_found(format!("no speaker {:?}", id.0)));
     }
+    if body.name.is_some() && body.merge_into.is_some() {
+        return Err(ApiError::bad_request(
+            "send either name or merge_into, not both",
+        ));
+    }
     let mut next: Speakers = speakers.clone();
     if let Some(name) = &body.name {
         let name = name.trim();
@@ -113,6 +118,7 @@ pub async fn patch(
     let is_me = speakers.me().id == survivor;
     let mut meetings = all_meetings(&state)?;
     let index = state.index.lock().expect("index lock poisoned");
+    let (mut updated, mut failed) = (0usize, Vec::new());
     for (dir, meeting) in &mut meetings {
         let mut moved = false;
         if body.merge_into.is_some() {
@@ -140,10 +146,27 @@ pub async fn patch(
         if !(moved || shows_me || mentions) {
             continue;
         }
-        if moved {
-            meeting.save(&dir.path())?;
+        let result = if moved {
+            meeting.save(&dir.path())
+        } else {
+            Ok(())
+        };
+        match result.and_then(|()| refresh(&state.config, &index, &speakers, meeting, dir)) {
+            Ok(()) => updated += 1,
+            Err(e) => {
+                tracing::warn!("updating {} after a people edit: {e:#}", dir.id.0);
+                failed.push(dir.id.0.clone());
+            }
         }
-        refresh(&state.config, &index, &speakers, meeting, dir)?;
+    }
+    // The registry is already saved; a few stale meetings are reported in the
+    // log, and only a total failure is an error.
+    if updated == 0 && !failed.is_empty() {
+        return Err(anyhow::anyhow!(
+            "speakers.json is saved, but no meeting could be updated: {}",
+            failed.join(", ")
+        )
+        .into());
     }
 
     let counts = meeting_counts(meetings.iter().map(|(_, m)| m));

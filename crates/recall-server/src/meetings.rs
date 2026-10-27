@@ -254,17 +254,24 @@ pub async fn patch(
         meeting.segments.remove(i);
     }
 
+    // Save before renaming, so a failed rename loses no edits. A rename
+    // then saves again to record the new id.
     let old_id = dir.id.clone();
-    let dir = match title {
-        Some(title) => {
-            let dir = dir.rename(&title)?;
-            meeting.id = dir.id.clone();
-            meeting.title = title;
-            dir
-        }
-        None => dir,
-    };
+    if let Some(title) = title {
+        meeting.title = title;
+    }
     meeting.save(&dir.path())?;
+    let dir = if body.title.is_some() {
+        let title = meeting.title.clone();
+        let dir = dir.rename(&title)?;
+        if dir.id != old_id {
+            meeting.id = dir.id.clone();
+            meeting.save(&dir.path())?;
+        }
+        dir
+    } else {
+        dir
+    };
     let index = state.index.lock().expect("index lock poisoned");
     if old_id != dir.id {
         index.remove(&old_id)?;

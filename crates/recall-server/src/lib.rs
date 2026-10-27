@@ -12,10 +12,15 @@ mod people;
 mod static_files;
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::Context;
 use axum::Router;
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use recall_llm::Llm;
 use recall_store::{Config, Event, Index, MeetingId, Speakers, Step};
@@ -63,6 +68,9 @@ pub type RerunFn = dyn Fn(&MeetingId, Step) -> anyhow::Result<i64> + Send + Sync
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
+    /// Where `PUT /api/config` reads and writes; the binary sets it from
+    /// [`Config::path`].
+    pub config_path: PathBuf,
     pub index: Arc<Mutex<Index>>,
     pub speakers: Arc<Mutex<Speakers>>,
     pub events: broadcast::Sender<Event>,
@@ -96,7 +104,45 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .nest("/api", api)
         .fallback(static_files::serve)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            same_origin_only,
+        ))
         .with_state(state)
+}
+
+/// Rejects with 403 any request whose `Host` is not `127.0.0.1:<port>` or
+/// `localhost:<port>`, or that carries an `Origin` other than `http://` plus
+/// one of those. Binding to loopback alone is not enough: a page on another
+/// site can still send simple POSTs (e.g. `/api/record/discard`) without a
+/// preflight, and DNS rebinding lets it read responses under its own host
+/// name.
+///
+/// `<port>` is always `config.port`, which must therefore be the port the
+/// listener is bound to; tests bind first and put the bound port in the
+/// config.
+async fn same_origin_only(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if !is_same_origin(request.headers(), state.config.port) {
+        return (
+            StatusCode::FORBIDDEN,
+            "cross-origin requests are not allowed",
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+fn is_same_origin(headers: &HeaderMap, port: u16) -> bool {
+    let hosts = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    let get = |name| headers.get(name).map(|v| v.to_str().unwrap_or_default());
+    let host_ok =
+        get(header::HOST).is_some_and(|h| hosts.iter().any(|a| a.eq_ignore_ascii_case(h)));
+    let origin_ok = get(header::ORIGIN).is_none_or(|o| {
+        hosts
+            .iter()
+            .any(|a| o.eq_ignore_ascii_case(&format!("http://{a}")))
+    });
+    host_ok && origin_ok
 }
 
 /// Serves the app on `127.0.0.1:<config.port>` until the process exits. The

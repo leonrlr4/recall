@@ -102,10 +102,15 @@ fn sample(id: &MeetingId, title: &str, alice: &SpeakerId, text: &str) -> Meeting
 
 async fn harness() -> Harness {
     let tmp = tempfile::tempdir().unwrap();
+    // Bound first: the server only accepts requests addressed to its
+    // configured port.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
     let config = Arc::new(Config {
         meetings_dir: tmp.path().join("Meetings"),
         data_dir: tmp.path().join("data"),
         summary_lang: "en".into(),
+        port: addr.port(),
         ..Config::default()
     });
     let mut speakers = Speakers::default();
@@ -136,6 +141,7 @@ async fn harness() -> Harness {
     let (events, _) = broadcast::channel(16);
     let state = AppState {
         config: config.clone(),
+        config_path: tmp.path().join("config.toml"),
         index: Arc::new(Mutex::new(index)),
         speakers: Arc::new(Mutex::new(speakers)),
         events,
@@ -160,8 +166,6 @@ async fn harness() -> Harness {
         }),
     };
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
     let router = build_router(state.clone());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
@@ -565,22 +569,97 @@ async fn config_get_and_put() {
         .unwrap();
     assert_eq!(config["summary_lang"], "en");
 
-    let path = h.config.data_dir.join("config.toml");
-    // SAFETY: this is the only test that reads or writes RECALL_CONFIG.
-    unsafe { std::env::set_var("RECALL_CONFIG", &path) };
-    let mut changed = config.clone();
-    changed["port"] = json!(8080);
-    let res: Value = reqwest::Client::new()
-        .put(h.url("/api/config"))
-        .json(&changed)
-        .send()
-        .await
-        .unwrap()
-        .json()
+    let path = h.state.config_path.clone();
+    fs::write(
+        &path,
+        "summary_lang = \"en\"\n[llm]\nbackend = \"claude\"\nmodel = \"m\"\n",
+    )
+    .unwrap();
+    let client = reqwest::Client::new();
+    let put = |body: Value| client.put(h.url("/api/config")).json(&body).send();
+
+    let res = put(json!({ "port": 9000, "llm": { "model": "n" } }))
         .await
         .unwrap();
-    assert_eq!(res, json!({ "restart_required": true }));
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        res.json::<Value>().await.unwrap(),
+        json!({ "restart_required": true })
+    );
     let saved = Config::load_from(&path).unwrap();
-    assert_eq!(saved.port, 8080);
-    assert_eq!(saved.summary_lang, "en");
+    assert_eq!(saved.port, 9000);
+    assert_eq!(saved.summary_lang, "en", "unsent key was reset");
+    assert_eq!(saved.llm.backend, "claude", "unsent section key was reset");
+    assert_eq!(saved.llm.model, "n");
+
+    for (body, needle) in [
+        (json!({ "prot": 1 }), "prot"),
+        (json!({ "llm": { "modle": "x" } }), "llm.modle"),
+        (json!({ "port": 0 }), "port"),
+        (json!({ "data_dir": "rel/dir" }), "data_dir"),
+        (json!({ "port": "x" }), "invalid config"),
+        (json!([1]), "object"),
+    ] {
+        let res = put(body.clone()).await.unwrap();
+        assert_eq!(res.status(), 400, "{body}");
+        let error: Value = res.json().await.unwrap();
+        assert!(
+            error["error"].as_str().unwrap().contains(needle),
+            "{body}: {error}"
+        );
+    }
+    assert_eq!(Config::load_from(&path).unwrap().port, 9000);
+}
+
+#[tokio::test]
+async fn cross_origin_requests_are_forbidden() {
+    let h = harness().await;
+    let client = reqwest::Client::new();
+    let evil_origin = client
+        .post(h.url("/api/record/discard"))
+        .header("Origin", "https://evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(evil_origin.status(), 403);
+    let evil_host = client
+        .get(h.url("/api/meetings"))
+        .header("Host", "evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(evil_host.status(), 403);
+    let evil_spa = client
+        .get(h.url("/"))
+        .header("Host", "evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(evil_spa.status(), 403);
+
+    let port = h.config.port;
+    let same_origin = client
+        .post(h.url("/api/record/stop"))
+        .header("Origin", format!("http://localhost:{port}"))
+        .header("Host", format!("localhost:{port}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(same_origin.status(), 204);
+    let plain = client.get(h.url("/api/status")).send().await.unwrap();
+    assert_eq!(plain.status(), 200);
+}
+
+#[tokio::test]
+async fn people_patch_rejects_name_with_merge() {
+    let h = harness().await;
+    let res = reqwest::Client::new()
+        .patch(h.url(&format!("/api/people/{}", h.alice.0)))
+        .json(&json!({ "name": "A", "merge_into": "me" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let saved = Speakers::load(&h.config.speakers_path()).unwrap();
+    assert_eq!(saved.name_of(&h.alice), "Alice");
 }
