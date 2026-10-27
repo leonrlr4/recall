@@ -1,0 +1,4 @@
+/target
+/.superpowers/
+/.worktrees/
+/web/node_modules/
