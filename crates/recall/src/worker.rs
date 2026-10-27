@@ -116,18 +116,7 @@ impl Worker {
             return Ok(false);
         };
         tracing::info!(id = job.meeting.0, from = ?job.from_step, job = job.id, "processing");
-        let processed =
-            panic::catch_unwind(AssertUnwindSafe(|| self.process(runtime, engines, &job)));
-        let outcome = processed.unwrap_or_else(|payload| {
-            // The engines may be half way through a call; load them afresh.
-            *engines = None;
-            let error = format!("the worker panicked: {}", panic_message(&*payload));
-            let step = self.record_failure(&job, None, &error);
-            Outcome {
-                title: job.meeting.0.clone(),
-                result: Err((step, anyhow!(error))),
-            }
-        });
+        let outcome = self.process(runtime, engines, &job);
         let title = outcome.title.clone();
         match outcome.result {
             Ok(()) => {
@@ -197,25 +186,36 @@ impl Worker {
                 }
             }
         }
-        let engines = engines.as_mut().expect("loaded above");
+        let loaded = engines.as_mut().expect("loaded above");
         let mut speakers = lock(&self.speakers).clone();
         let events = &self.events;
         let meeting = &job.meeting;
-        let result = runtime.block_on(run_from(
-            engines,
-            &self.config,
-            &dir,
-            &mut speakers,
-            job.from_step,
-            |step, pct| {
-                tracing::info!(id = meeting.0, ?step, pct, "step done");
-                let _ = events.send(Event::Progress {
-                    meeting: meeting.clone(),
-                    step,
-                    pct,
-                });
-            },
-        ));
+        // Only the run is guarded, so that the speakers merge and the
+        // failure record below happen after a panic too: a Name step that
+        // finished has already saved its voices to speakers.json, and the
+        // next save of the shared copy would drop them.
+        let run = panic::catch_unwind(AssertUnwindSafe(|| {
+            runtime.block_on(run_from(
+                loaded,
+                &self.config,
+                &dir,
+                &mut speakers,
+                job.from_step,
+                |step, pct| {
+                    tracing::info!(id = meeting.0, ?step, pct, "step done");
+                    let _ = events.send(Event::Progress {
+                        meeting: meeting.clone(),
+                        step,
+                        pct,
+                    });
+                },
+            ))
+        }));
+        let result = run.unwrap_or_else(|payload| {
+            // The engines may be half way through a call; load them afresh.
+            *engines = None;
+            Err(anyhow!("pipeline panicked: {}", panic_message(&*payload)))
+        });
         let merged = self.merge_speakers(&speakers);
         outcome.result = match result {
             Ok(()) => merged.map_err(|err| (Step::Name, err)),
@@ -223,7 +223,12 @@ impl Worker {
                 if let Err(merge) = merged {
                     tracing::error!(err = format!("{merge:#}"), "saving the speakers");
                 }
-                Err((failed_step(&dir).unwrap_or(job.from_step), err))
+                // A panic leaves its step running in meeting.json.
+                let step = match failed_step(&dir) {
+                    Some(step) => step,
+                    None => self.record_failure(job, None, &format!("{err:#}")),
+                };
+                Err((step, err))
             }
         };
         outcome

@@ -79,15 +79,20 @@ impl Diarizer for FakeDiarizer {
     }
 }
 
-/// Panics on every call.
-struct PanickingTranscriber;
+/// Panics on every call, so a run gets past Name and dies in Summarize.
+struct PanickingLlm;
 
-impl Transcriber for PanickingTranscriber {
-    fn transcribe(&mut self, _: &[f32], _: &[Region], _: &str) -> Result<Vec<Utterance>> {
-        panic!("whisper blew up");
+#[async_trait]
+impl Llm for PanickingLlm {
+    async fn complete(&self, _: &str, _: &str) -> Result<String> {
+        panic!("the model blew up");
     }
 
-    fn model_name(&self) -> String {
+    async fn stream(&self, _: &str, _: &str, _: mpsc::Sender<String>) -> Result<()> {
+        panic!("the model blew up");
+    }
+
+    fn name(&self) -> String {
         "panicking".into()
     }
 }
@@ -454,11 +459,11 @@ fn run_failing_at_summarize_still_adds_its_new_voices() {
 }
 
 #[test]
-fn panicking_job_is_failed_and_the_worker_goes_on() {
+fn panicking_job_is_failed_keeps_its_voices_and_the_worker_goes_on() {
     let f = fixture();
     let mut worker = worker_with(&f, || {
         let mut engines = fake_engines(false);
-        engines.transcriber = Box::new(PanickingTranscriber);
+        engines.llm = Arc::new(PanickingLlm);
         Ok(engines)
     });
     let mut engines = None;
@@ -466,12 +471,22 @@ fn panicking_job_is_failed_and_the_worker_goes_on() {
     assert!(worker.run_next(&runtime(), &mut engines).unwrap());
 
     assert!(engines.is_none(), "engines are reloaded after a panic");
-    assert_eq!(state(&f), "failed:transcribe");
+    assert_eq!(state(&f), "failed:summarize");
     let meeting = Meeting::load(&f.dir.path()).unwrap();
-    match &meeting.steps[&Step::Transcribe] {
-        StepState::Failed { error, .. } => assert!(error.contains("whisper blew up"), "{error}"),
+    match &meeting.steps[&Step::Summarize] {
+        StepState::Failed { error, .. } => {
+            assert!(
+                error.contains("pipeline panicked: the model blew up"),
+                "{error}"
+            )
+        }
         other => panic!("{other:?}"),
     }
+    // The Name step registered the remote voice before the panic.
+    let remote = meeting.clusters[0].speaker.clone().unwrap();
+    assert!(f.speakers.lock().unwrap().get(&remote).is_some());
+    let on_disk = Speakers::load(&f.config.speakers_path()).unwrap();
+    assert!(on_disk.get(&remote).is_some());
     assert_eq!(f.index.lock().unwrap().active_job(&f.dir.id).unwrap(), None);
     assert!(!worker.run_next(&runtime(), &mut engines).unwrap());
 }
