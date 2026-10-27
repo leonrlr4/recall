@@ -48,13 +48,19 @@ struct TrackFiles {
 }
 
 impl TrackFiles {
-    fn new(track: Track) -> Self {
-        Self {
+    /// Starts after the highest chunk already in `cache`, so a writer reopened
+    /// on a cache (after a crash or restart) never truncates existing chunks.
+    fn open(cache: &Path, track: Track) -> Result<Self> {
+        let index = match chunks(cache, track)?.last() {
+            Some((last, _)) => last + 1,
+            None => 0,
+        };
+        Ok(Self {
             track,
-            index: 0,
+            index,
             file: None,
             in_chunk: 0,
-        }
+        })
     }
 }
 
@@ -66,13 +72,14 @@ pub struct ChunkWriter {
 }
 
 impl ChunkWriter {
-    /// Creates `cache` if needed. Chunk files appear only once samples arrive.
+    /// Creates `cache` if needed. Chunk files appear only once samples arrive;
+    /// each track continues after the chunks already in `cache`.
     pub fn new(cache: &Path) -> Result<Self> {
         std::fs::create_dir_all(cache).with_context(|| format!("creating {}", cache.display()))?;
         Ok(Self {
             cache: cache.to_path_buf(),
-            mic: TrackFiles::new(Track::Mic),
-            sys: TrackFiles::new(Track::Sys),
+            mic: TrackFiles::open(cache, Track::Mic)?,
+            sys: TrackFiles::open(cache, Track::Sys)?,
         })
     }
 
@@ -100,10 +107,13 @@ impl ChunkWriter {
             files.in_chunk += take;
             samples = &samples[take..];
             if files.in_chunk == CHUNK_SAMPLES {
+                // Move to the next chunk before flushing: if the flush fails,
+                // the next push must open a new file, not recreate (and
+                // truncate) this one.
                 let mut full = files.file.take().expect("chunk is open");
-                full.flush().context("flushing a full chunk")?;
                 files.index += 1;
                 files.in_chunk = 0;
+                full.flush().context("flushing a full chunk")?;
             }
         }
         Ok(())
@@ -124,8 +134,8 @@ fn chunk_path(cache: &Path, track: Track, index: u32) -> PathBuf {
     cache.join(format!("{}-{index:05}.f32", track.prefix()))
 }
 
-/// The track's chunk files in numeric order.
-fn chunks(cache: &Path, track: Track) -> Result<Vec<PathBuf>> {
+/// The track's chunk files with their indices, in numeric order.
+fn chunks(cache: &Path, track: Track) -> Result<Vec<(u32, PathBuf)>> {
     let prefix = format!("{}-", track.prefix());
     let mut found = Vec::new();
     for entry in std::fs::read_dir(cache).with_context(|| format!("reading {}", cache.display()))? {
@@ -142,7 +152,14 @@ fn chunks(cache: &Path, track: Track) -> Result<Vec<PathBuf>> {
         found.push((index, entry.path()));
     }
     found.sort();
-    Ok(found.into_iter().map(|(_, path)| path).collect())
+    Ok(found)
+}
+
+fn chunk_paths(cache: &Path, track: Track) -> Result<Vec<PathBuf>> {
+    Ok(chunks(cache, track)?
+        .into_iter()
+        .map(|(_, path)| path)
+        .collect())
 }
 
 /// Whole samples stored in the track's chunks. A trailing partial sample left
@@ -219,8 +236,8 @@ impl TrackReader {
 /// system audio on the right, padding the shorter track with silence. Returns
 /// the length of the longer track.
 pub fn finalize(cache: &Path, out: &Path) -> Result<Duration> {
-    let mic_paths = chunks(cache, Track::Mic)?;
-    let sys_paths = chunks(cache, Track::Sys)?;
+    let mic_paths = chunk_paths(cache, Track::Mic)?;
+    let sys_paths = chunk_paths(cache, Track::Sys)?;
     if mic_paths.is_empty() && sys_paths.is_empty() {
         bail!("no audio chunks in {}", cache.display());
     }
@@ -243,8 +260,8 @@ pub fn finalize(cache: &Path, out: &Path) -> Result<Duration> {
         sys_block[sys_len..len].fill(0.0);
         stereo.clear();
         for (left, right) in mic_block[..len].iter().zip(&sys_block[..len]) {
-            stereo.push(*left);
-            stereo.push(*right);
+            stereo.push(sanitize(*left));
+            stereo.push(sanitize(*right));
         }
         writer.write_interleaved(&stereo)?;
     }
@@ -252,10 +269,21 @@ pub fn finalize(cache: &Path, out: &Path) -> Result<Duration> {
     Ok(samples_to_duration(total))
 }
 
+/// Maps a captured sample into the encoder's range: non-finite values (a
+/// corrupt chunk, a misbehaving source) become silence, the rest is clamped
+/// to [-1, 1].
+fn sanitize(sample: f32) -> f32 {
+    if sample.is_finite() {
+        sample.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 /// The length of the longer track in the cache.
 pub fn cache_duration(cache: &Path) -> Result<Duration> {
-    let mic = track_samples(&chunks(cache, Track::Mic)?)?;
-    let sys = track_samples(&chunks(cache, Track::Sys)?)?;
+    let mic = track_samples(&chunk_paths(cache, Track::Mic)?)?;
+    let sys = track_samples(&chunk_paths(cache, Track::Sys)?)?;
     Ok(samples_to_duration(mic.max(sys)))
 }
 
@@ -314,6 +342,45 @@ mod tests {
         let out = dir.path().join("audio.opus");
         let duration = finalize(&cache, &out).unwrap();
         assert_eq!(duration, Duration::from_secs(3));
+        assert!(file_len(&out) > 0);
+    }
+
+    #[test]
+    fn new_writer_continues_after_existing_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join(".cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("mic-00000.f32"), 0.5f32.to_le_bytes()).unwrap();
+
+        let mut writer = ChunkWriter::new(&cache).unwrap();
+        writer.push(Track::Mic, &[0.25]).unwrap();
+        writer.push(Track::Sys, &[0.25]).unwrap();
+        writer.flush().unwrap();
+
+        assert_eq!(file_len(&cache.join("mic-00000.f32")), 4);
+        assert_eq!(file_len(&cache.join("mic-00001.f32")), 4);
+        assert_eq!(file_len(&cache.join("sys-00000.f32")), 4);
+    }
+
+    #[test]
+    fn finalize_survives_non_finite_and_out_of_range_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join(".cache");
+        let mut writer = ChunkWriter::new(&cache).unwrap();
+        let mut samples = sine(440.0, 1);
+        samples[100] = f32::NAN;
+        samples[200] = f32::INFINITY;
+        samples[300] = 7.0;
+        writer.push(Track::Mic, &samples).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+
+        assert_eq!(sanitize(f32::NAN), 0.0);
+        assert_eq!(sanitize(f32::NEG_INFINITY), 0.0);
+        assert_eq!(sanitize(7.0), 1.0);
+        assert_eq!(sanitize(-7.0), -1.0);
+        let out = dir.path().join("audio.opus");
+        finalize(&cache, &out).unwrap();
         assert!(file_len(&out) > 0);
     }
 
