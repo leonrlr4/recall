@@ -2,3 +2,4 @@
 /.superpowers/
 /.worktrees/
 /web/node_modules/
+__pycache__/
