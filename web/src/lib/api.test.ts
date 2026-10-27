@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ApiError, ask, audioUrl, listUrl, meetingUrl, parseSse } from './api';
+import { ApiError, ask, audioUrl, listUrl, meetingUrl, parseSse, putConfig } from './api';
 
 describe('api', () => {
   it('api_list_builds_query_string', () => {
@@ -73,5 +73,42 @@ describe('ask', () => {
   it('sse_parser_reports_error_events', () => {
     const p = parseSse();
     expect(p.push('event: error\ndata: boom\n\n')).toEqual([{ event: 'error', data: 'boom' }]);
+  });
+});
+
+describe('config', () => {
+  it('api_put_config_returns_restart_flag', async () => {
+    const orig = globalThis.fetch;
+    const calls: { url: string; init?: RequestInit }[] = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init });
+      return Response.json({ restart_required: true });
+    };
+    try {
+      const res = await putConfig({ port: 8000, llm: { model: 'llama' } });
+      expect(res).toEqual({ restart_required: true });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe('/api/config');
+      expect(calls[0].init?.method).toBe('PUT');
+      expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+        port: 8000,
+        llm: { model: 'llama' },
+      });
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it('api_errors_carry_the_server_error_message', async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = async () => Response.json({ error: 'port must not be 0' }, { status: 400 });
+    try {
+      const err = await putConfig({ port: 0 }).catch((e) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.status).toBe(400);
+      expect(err.message).toBe('port must not be 0');
+    } finally {
+      globalThis.fetch = orig;
+    }
   });
 });

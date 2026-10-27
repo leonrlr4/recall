@@ -119,3 +119,54 @@ export interface MeetingPatch {
   title?: string;
   segments?: SegmentPatch[];
 }
+
+export interface LlmConfig {
+  /** `ollama` or `claude`. */
+  backend: string;
+  model: string;
+  endpoint: string;
+}
+
+export interface SttConfig {
+  /** `breeze`. */
+  engine: string;
+  threads: number;
+}
+
+/** `GET /api/config`: the config the daemon is running with. */
+export interface Config {
+  meetings_dir: string;
+  data_dir: string;
+  record_screen: boolean;
+  allowlist: string[];
+  debounce_secs: number;
+  end_grace_secs: number;
+  min_length_secs: number;
+  llm: LlmConfig;
+  summary_lang: string;
+  /** Absent when unset; `null` in a patch clears it. */
+  ui_lang?: string | null;
+  stt: SttConfig;
+  port: number;
+}
+
+/** `PUT /api/config` body: any subset, sections may be partial. */
+export type ConfigPatch = Partial<Omit<Config, 'llm' | 'stt'>> & {
+  llm?: Partial<LlmConfig>;
+  stt?: Partial<SttConfig>;
+};
+
+export interface SelfTest {
+  /** 50 peak levels each, 0 to 1. */
+  mic_peaks: number[];
+  sys_peaks: number[];
+}
+
+export interface Status {
+  phase: string;
+  /** Unix milliseconds when `phase` began. */
+  since_ms: number;
+  source_app: string | null;
+  mic_peak: number;
+  sys_peak: number;
+}

@@ -155,7 +155,15 @@
                 <path d="M1.5 13.5c.5-2.5 2.3-4 4.5-4s4 1.5 4.5 4M11 4h3.5M13 2.5 14.5 4 13 5.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </button>
-            <button class="icon-btn danger" title={t('transcript.delete')} aria-label={t('transcript.delete')} disabled={busy} onclick={() => ondelete(i)}>
+            <!-- Deleting shifts line indices, which would restart an open edit
+                 on its new index and drop the draft; finish the edit first. -->
+            <button
+              class="icon-btn danger"
+              title={t('transcript.delete')}
+              aria-label={t('transcript.delete')}
+              disabled={busy || editing !== null}
+              onclick={() => ondelete(i)}
+            >
               <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
                 <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.5 9h6l.5-9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
               </svg>

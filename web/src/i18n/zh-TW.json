@@ -6,15 +6,15 @@
     "settings": "設定"
   },
   "status": {
-    "recording": "正在錄製 {app}"
+    "recording": "正在錄製 {app}",
+    "recording_any": "錄音中"
   },
   "common": {
     "loading": "載入中…",
     "save": "儲存",
     "cancel": "取消",
     "back_to_list": "所有會議",
-    "not_found": "找不到這個頁面。",
-    "coming_soon": "這個頁面還沒做好。"
+    "not_found": "找不到這個頁面。"
   },
   "keys": {
     "title": "快速鍵",
@@ -119,9 +119,96 @@
     "failed": "無法取得回答，請確認語言模型正在執行。"
   },
   "people": {
-    "title": "人員"
+    "title": "人員",
+    "intro": "recall 從聲音認出的每個人。改名會套用到所有會議；兩筆是同一個人時可以合併。",
+    "col_name": "名稱",
+    "col_aliases": "其他名稱",
+    "col_samples": "聲音樣本",
+    "col_meetings": "會議",
+    "col_merge": "合併",
+    "rename": "點一下改名",
+    "name_label": "{name} 的新名稱",
+    "edit_hint": "點名稱可以改名。Enter 儲存，Esc 取消。",
+    "you": "你",
+    "me_no_merge": "你自己的項目不能合併",
+    "merge_into": "合併到…",
+    "merge_label": "把 {name} 合併到另一個人",
+    "merge_confirm": "要把「{from}」合併到「{into}」嗎？聲音樣本和會議中的發言都會移到「{into}」。這個動作無法復原。",
+    "save_failed": "無法儲存：{error}",
+    "load_failed": "無法載入人員：{error}",
+    "empty_title": "還沒有其他人",
+    "empty_body": "recall 在會議中聽到某人、你在逐字稿裡替他命名之後，他就會出現在這裡。"
   },
   "settings": {
-    "title": "設定"
+    "title": "設定",
+    "load_failed": "無法載入設定：{error}",
+    "save_failed": "無法儲存：{error}",
+    "saving": "儲存中…",
+    "saved": "已儲存",
+    "reset": "捨棄變更",
+    "restart_required": "已儲存。重新啟動 recall 背景服務後才會生效。",
+    "group": {
+      "recording": "錄音",
+      "transcription": "語音轉文字",
+      "summary": "摘要",
+      "interface": "介面",
+      "server": "伺服器"
+    },
+    "meetings_dir": "會議資料夾",
+    "meetings_dir_help": "絕對路徑。每場會議會在這裡建立一個資料夾，存放錄音、逐字稿和筆記。",
+    "data_dir": "資料目錄",
+    "data_dir_help": "絕對路徑。存放講者名冊、搜尋索引和模型。",
+    "record_screen": "同時錄製螢幕",
+    "record_screen_help": "在錄音旁另存一份螢幕錄影。",
+    "allowlist": "會觸發錄音的 App",
+    "allowlist_help": "這些 App 使用麥克風時，recall 就開始錄音。按 Enter 或逗號新增。",
+    "tag_placeholder": "新增 App…",
+    "tag_remove": "移除 {tag}",
+    "debounce_secs": "開始延遲（秒）",
+    "debounce_secs_help": "App 佔用麥克風多久之後才開始錄音。",
+    "end_grace_secs": "結束緩衝（秒）",
+    "end_grace_secs_help": "麥克風釋放後再繼續錄多久。",
+    "min_length_secs": "最短長度（秒）",
+    "min_length_secs_help": "比這短的錄音會直接捨棄。",
+    "stt_engine": "語音辨識引擎",
+    "stt_engine_help": "把語音轉成文字的本機模型。",
+    "stt_threads": "CPU 執行緒",
+    "stt_threads_help": "語音轉文字使用的執行緒數。",
+    "llm_backend": "語言模型",
+    "llm_backend_help": "負責寫摘要和回答問題。",
+    "llm_model": "模型名稱",
+    "llm_model_help": "使用 Ollama 時，填已下載的模型，例如 qwen3.6:35b-a3b。",
+    "llm_endpoint": "Ollama 位址",
+    "llm_endpoint_help": "Ollama 伺服器監聽的位址。",
+    "summary_lang": "摘要語言",
+    "summary_lang_help": "摘要、決議和待辦事項使用的語言。",
+    "ui_lang": "介面語言",
+    "ui_lang_help": "在這個瀏覽器立即生效；儲存後也會寫進設定檔。",
+    "port": "連接埠",
+    "port_help": "網頁介面在 127.0.0.1 上使用的連接埠。",
+    "backend": {
+      "ollama": "Ollama（本機）",
+      "claude": "Claude"
+    },
+    "lang": {
+      "auto": "跟隨瀏覽器",
+      "zh-TW": "繁體中文",
+      "en": "English"
+    },
+    "err_seconds": "請輸入 0 以上的整數秒數。",
+    "err_threads": "請輸入 1 到 256 的整數。",
+    "err_port": "請輸入 1 到 65535 的連接埠。",
+    "err_absolute": "請輸入以 / 開頭的絕對路徑。",
+    "selftest": {
+      "run": "測試錄音",
+      "running": "錄音中… {n}",
+      "help": "從麥克風和系統音訊各錄 {n} 秒。請播放一點聲音並說幾句話。",
+      "meter": "{track}：最大音量 {pct}%",
+      "failed": "測試失敗：{error}",
+      "ok": "兩個音軌都有聲音，錄音正常。",
+      "sys_silent": "沒有錄到系統音訊。請確認當時有在播放聲音，並且 recall 能讀取輸出監聽來源。",
+      "mic_silent": "麥克風沒有聲音。請檢查輸入裝置，並確認沒有靜音。",
+      "both_silent": "兩個音軌都沒有聲音。請檢查麥克風，並確認當時有在播放聲音。"
+    }
   }
 }

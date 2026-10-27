@@ -6,15 +6,15 @@
     "settings": "Settings"
   },
   "status": {
-    "recording": "Recording {app}"
+    "recording": "Recording {app}",
+    "recording_any": "Recording"
   },
   "common": {
     "loading": "Loading…",
     "save": "Save",
     "cancel": "Cancel",
     "back_to_list": "All meetings",
-    "not_found": "This page does not exist.",
-    "coming_soon": "This page is not built yet."
+    "not_found": "This page does not exist."
   },
   "keys": {
     "title": "Keyboard",
@@ -119,9 +119,96 @@
     "failed": "Could not get an answer. Check that the language model is running."
   },
   "people": {
-    "title": "People"
+    "title": "People",
+    "intro": "Everyone recall has recognised by voice. Rename someone to fix their name in every meeting, or merge two entries that are the same person.",
+    "col_name": "Name",
+    "col_aliases": "Also known as",
+    "col_samples": "Voice samples",
+    "col_meetings": "Meetings",
+    "col_merge": "Merge",
+    "rename": "Click to rename",
+    "name_label": "New name for {name}",
+    "edit_hint": "Click a name to rename it. Enter saves, Esc cancels.",
+    "you": "You",
+    "me_no_merge": "Your own entry cannot be merged",
+    "merge_into": "Merge into…",
+    "merge_label": "Merge {name} into another person",
+    "merge_confirm": "Merge “{from}” into “{into}”? Their voice samples and meeting lines move to “{into}”. This cannot be undone.",
+    "save_failed": "Could not save: {error}",
+    "load_failed": "Could not load people: {error}",
+    "empty_title": "Nobody else yet",
+    "empty_body": "People appear here after recall hears them in a meeting and you name them in the transcript."
   },
   "settings": {
-    "title": "Settings"
+    "title": "Settings",
+    "load_failed": "Could not load settings: {error}",
+    "save_failed": "Could not save: {error}",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "reset": "Discard changes",
+    "restart_required": "Saved. Restart the recall daemon to apply the changes.",
+    "group": {
+      "recording": "Recording",
+      "transcription": "Transcription",
+      "summary": "Summary",
+      "interface": "Interface",
+      "server": "Server"
+    },
+    "meetings_dir": "Meetings folder",
+    "meetings_dir_help": "Absolute path where each meeting gets its own folder with audio, transcript and notes.",
+    "data_dir": "Data folder",
+    "data_dir_help": "Absolute path for the speaker registry, search index and models.",
+    "record_screen": "Record the screen too",
+    "record_screen_help": "Saves a screen recording next to the audio.",
+    "allowlist": "Apps that start a recording",
+    "allowlist_help": "recall records when one of these apps uses the microphone. Press Enter or comma to add.",
+    "tag_placeholder": "Add an app…",
+    "tag_remove": "Remove {tag}",
+    "debounce_secs": "Start delay (s)",
+    "debounce_secs_help": "How long an app must hold the microphone before recording starts.",
+    "end_grace_secs": "End grace (s)",
+    "end_grace_secs_help": "How long to keep recording after the microphone is released.",
+    "min_length_secs": "Minimum length (s)",
+    "min_length_secs_help": "Shorter recordings are discarded.",
+    "stt_engine": "Speech recognition engine",
+    "stt_engine_help": "The local model that turns speech into text.",
+    "stt_threads": "CPU threads",
+    "stt_threads_help": "Threads used for transcription.",
+    "llm_backend": "Language model",
+    "llm_backend_help": "Writes summaries and answers questions.",
+    "llm_model": "Model name",
+    "llm_model_help": "For Ollama, a model you have pulled, such as qwen3.6:35b-a3b.",
+    "llm_endpoint": "Ollama address",
+    "llm_endpoint_help": "Where the Ollama server listens.",
+    "summary_lang": "Summary language",
+    "summary_lang_help": "Language of summaries, decisions and action items.",
+    "ui_lang": "Interface language",
+    "ui_lang_help": "Changes right away in this browser; saving also stores it in the config.",
+    "port": "Port",
+    "port_help": "The web app's port on 127.0.0.1.",
+    "backend": {
+      "ollama": "Ollama (local)",
+      "claude": "Claude"
+    },
+    "lang": {
+      "auto": "Follow the browser",
+      "zh-TW": "繁體中文",
+      "en": "English"
+    },
+    "err_seconds": "Enter a whole number of seconds, 0 or more.",
+    "err_threads": "Enter a whole number from 1 to 256.",
+    "err_port": "Enter a port from 1 to 65535.",
+    "err_absolute": "Enter an absolute path, starting with /.",
+    "selftest": {
+      "run": "Test recording",
+      "running": "Recording… {n}",
+      "help": "Records {n} seconds from the microphone and the system audio. Play something and say a few words.",
+      "meter": "{track}: loudest {pct}%",
+      "failed": "The test failed: {error}",
+      "ok": "Both tracks have sound. Recording works.",
+      "sys_silent": "No system audio captured. Check that something was playing and that recall can read the output monitor.",
+      "mic_silent": "The microphone is silent. Check the input device and that it is not muted.",
+      "both_silent": "Both tracks are silent. Check the microphone and that something was playing."
+    }
   }
 }

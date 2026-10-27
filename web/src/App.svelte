@@ -42,8 +42,11 @@
       </a>
     </nav>
     <div class="status" aria-live="polite">
-      {#if live.recording}
-        <span class="rec"><span class="dot"></span>{t('status.recording', { app: live.recording })}</span>
+      {#if live.recording !== null}
+        <span class="rec">
+          <span class="dot"></span>
+          {live.recording ? t('status.recording', { app: live.recording }) : t('status.recording_any')}
+        </span>
       {/if}
     </div>
   </div>
