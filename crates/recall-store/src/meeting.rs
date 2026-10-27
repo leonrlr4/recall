@@ -99,7 +99,7 @@ pub struct Chapter {
     pub title: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
     pub one_line: String,
     pub body: String,

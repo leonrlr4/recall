@@ -253,6 +253,18 @@ python3 bench/run.py
 See [bench/README.md](bench/README.md) for the metrics and how to record new
 cases.
 
+## Known limitations
+
+- A sentence repeated back-to-back can come out only once when both copies
+  fall in the same transcription window. Whisper decodes up to 28 s of glued
+  speech at a time and drops the repeat. Giving each speech region its own
+  window fixes this but doubles transcription time, so recall does not do it.
+  The ignored test `whisper_keeps_repeated_speech` in
+  `crates/recall-pipeline/src/transcribe.rs` reproduces it.
+- The bench cases `zh`, `zh-en` and `en-tw` have no recordings and are skipped
+  until someone records them; [bench/README.md](bench/README.md) says how.
+- Screen recording, the Google Meet extension and live captions are not built.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).

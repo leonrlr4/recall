@@ -1,6 +1,6 @@
 //! Meeting summaries and questions about a transcript, through an [`Llm`].
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use recall_llm::{Llm, ask_prompt, parse_summary, summary_prompt, transcript_text};
 use recall_store::{Segment, Side, Speakers, Summary};
 use tokio::sync::mpsc;
@@ -30,6 +30,10 @@ pub fn merge_prompt(lang: &str) -> String {
 /// `max_chars` (a single longer line is cut mid-line), each chunk is
 /// summarized on its own, and one more call merges those summaries. Chapter
 /// starts past the end of the last segment are moved back to it.
+///
+/// An empty transcript (nobody spoke, or voice detection found nothing)
+/// gives an empty summary without calling `llm`, so a silent recording still
+/// finishes.
 pub async fn summarize(
     llm: &dyn Llm,
     segments: &[Segment],
@@ -38,7 +42,7 @@ pub async fn summarize(
     max_chars: usize,
 ) -> Result<Summary> {
     if segments.is_empty() {
-        bail!("no transcript to summarize");
+        return Ok(Summary::default());
     }
     let text = transcript(segments, speakers);
     let system = summary_prompt(lang);
@@ -207,6 +211,22 @@ mod tests {
     const SUMMARY: &str = r#"{"one_line":"Release sync.","body":"Agreed to ship.","decisions":["Ship Friday"],"actions":[],"chapters":[{"start_ms":0,"title":"Release"},{"start_ms":999999999,"title":"Wrap-up"}]}"#;
 
     #[tokio::test]
+    async fn summarize_empty_transcript_is_empty_without_calling_llm() {
+        let llm = FakeLlm::new(|_, _| SUMMARY.into());
+
+        let summary = summarize(&llm, &[], &Speakers::default(), "en", 60_000)
+            .await
+            .unwrap();
+
+        assert!(llm.calls().is_empty());
+        assert_eq!(summary.one_line, "");
+        assert_eq!(summary.body, "");
+        assert!(summary.decisions.is_empty());
+        assert!(summary.actions.is_empty());
+        assert!(summary.chapters.is_empty());
+    }
+
+    #[tokio::test]
     async fn summarize_single_chunk_parses() {
         let (segments, speakers) = meeting();
         let llm = FakeLlm::new(|_, _| format!("```json\n{SUMMARY}\n```"));
@@ -323,17 +343,6 @@ mod tests {
         let text = format!("{err:#}");
         assert!(text.starts_with("summary of part 2: "), "{text}");
         assert!(text.contains("not a summary"), "{text}");
-    }
-
-    #[tokio::test]
-    async fn summarize_refuses_an_empty_transcript() {
-        let llm = FakeLlm::new(|_, _| SUMMARY.into());
-        assert!(
-            summarize(&llm, &[], &Speakers::default(), "en", 60_000)
-                .await
-                .is_err()
-        );
-        assert!(llm.calls().is_empty());
     }
 
     #[tokio::test]

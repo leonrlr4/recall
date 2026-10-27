@@ -371,6 +371,45 @@ async fn mic_only_meeting_gives_every_line_to_me() {
     assert_eq!(rows[0].participants, [speakers.me().name.clone()]);
 }
 
+#[tokio::test]
+async fn silent_meeting_is_done_with_no_segments() {
+    // Silence on both channels, so the fake VAD finds no regions.
+    let f = fixture_with("aevalsrc=0|0:s=48000:d=2");
+    let calls = Calls::default();
+    let mut engines = engines(&calls, false);
+    let mut speakers = Speakers::default();
+
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut speakers,
+        Step::Segment,
+        |_, _| {},
+    )
+    .await
+    .unwrap();
+
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    for step in Step::ALL {
+        done_at(&meeting, step);
+    }
+    assert!(meeting.segments.is_empty());
+    assert_eq!(calls.llm.load(Ordering::SeqCst), 0);
+    let summary = meeting.summary.expect("summary");
+    assert!(summary.one_line.is_empty() && summary.body.is_empty());
+    let md = std::fs::read_to_string(f.dir.markdown()).unwrap();
+    assert!(
+        !md.contains("## 摘要") && !md.contains("## Summary"),
+        "{md}"
+    );
+    let rows = Index::open(&f.config.index_path())
+        .unwrap()
+        .list(&ListFilter::default())
+        .unwrap();
+    assert_eq!(rows[0].state, "done");
+}
+
 /// The queue worker runs pipelines on a spawned task, which needs a `Send`
 /// future.
 #[allow(dead_code)]

@@ -44,10 +44,11 @@ pub fn render(meeting: &Meeting, speakers: &Speakers, lang: &str) -> String {
     write_frontmatter(&mut out, meeting, speakers);
 
     if let Some(summary) = &meeting.summary {
-        let _ = write!(out, "\n## {}\n\n", labels.summary);
+        // No summary heading over an empty summary (a silent recording).
         let paragraphs = [summary.one_line.trim(), summary.body.trim()];
         let text: Vec<&str> = paragraphs.into_iter().filter(|p| !p.is_empty()).collect();
         if !text.is_empty() {
+            let _ = write!(out, "\n## {}\n\n", labels.summary);
             let _ = writeln!(out, "{}", text.join("\n\n"));
         }
         if !summary.decisions.is_empty() {
@@ -351,6 +352,20 @@ tags: []
         assert!(md.contains("source_app: null\n"));
         assert!(!md.contains("## Summary"));
         assert!(md.contains("\n## Transcript\n"));
+    }
+
+    #[test]
+    fn markdown_with_empty_summary_omits_summary_heading() {
+        let (mut meeting, speakers) = sample();
+        meeting.summary = Some(Summary::default());
+        for (lang, heading) in [("zh-TW", "## 摘要"), ("en", "## Summary")] {
+            let md = render(&meeting, &speakers, lang);
+            assert!(!md.contains(heading), "{md}");
+        }
+        let md = render(&meeting, &speakers, "en");
+        assert!(md.contains("\n## Transcript\n"));
+        assert!(!md.contains("## Decisions"));
+        assert!(!md.contains("## Chapters"));
     }
 
     #[test]
