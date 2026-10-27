@@ -306,6 +306,27 @@ async fn run_from_summarize_only_reruns_last_steps() {
 }
 
 #[tokio::test]
+async fn summary_chunk_size_follows_context_tokens() {
+    let mut f = fixture();
+    // 50 tokens give a 30-character budget, less than the two lines, so
+    // the summary takes one call per line and one merge.
+    f.config.llm.context_tokens = 50;
+    let calls = Calls::default();
+    let mut engines = engines(&calls, false);
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut Speakers::default(),
+        Step::Segment,
+        |_, _| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(calls.llm.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
 async fn failed_step_is_recorded_and_later_steps_stay_pending() {
     let f = fixture();
     let calls = Calls::default();

@@ -71,6 +71,7 @@
       if (!isInt(form[f], 0)) out[f] = t('settings.err_seconds');
     }
     if (!isInt(form.stt.threads, 1, 256)) out['stt.threads'] = t('settings.err_threads');
+    if (!isInt(form.llm.context_tokens, 1024)) out['llm.context_tokens'] = t('settings.err_context_tokens');
     if (!isInt(form.port, 1, 65535)) out.port = t('settings.err_port');
     for (const f of ['meetings_dir', 'data_dir'] as const) {
       if (!form[f].startsWith('/')) out[f] = t('settings.err_absolute');
@@ -288,6 +289,11 @@
             {@render below('llm.endpoint', t('settings.llm_endpoint_help'))}
           </div>
         {/if}
+        <div class="field">
+          <label for={id('llm.context_tokens')}>{t('settings.llm_context_tokens')}</label>
+          <input id={id('llm.context_tokens')} class="input tnum narrow" type="number" min="1024" step="1024" bind:value={form.llm.context_tokens} aria-invalid={!!errors['llm.context_tokens']} aria-describedby={describedby('llm.context_tokens')} />
+          {@render below('llm.context_tokens', t('settings.llm_context_tokens_help'))}
+        </div>
         <div class="field">
           <label for={id('summary_lang')}>{t('settings.summary_lang')}</label>
           <select id={id('summary_lang')} class="select narrow" bind:value={form.summary_lang} aria-describedby={describedby('summary_lang')}>

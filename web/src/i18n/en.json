@@ -131,7 +131,8 @@
     "send": "Ask",
     "stop": "Stop",
     "stopped": "(stopped)",
-    "failed": "Could not get an answer. Check that the language model is running."
+    "failed": "Could not get an answer. Check that the language model is running.",
+    "too_long": "This meeting is too long for the language model's context. Raise \"Context size\" in Settings."
   },
   "people": {
     "title": "People",
@@ -195,6 +196,8 @@
     "llm_model_help": "For Ollama, a model you have pulled, such as qwen3.6:35b-a3b.",
     "llm_endpoint": "Ollama address",
     "llm_endpoint_help": "Where the Ollama server listens.",
+    "llm_context_tokens": "Context size (tokens)",
+    "llm_context_tokens_help": "How much text the model reads at once. Larger meetings are summarized in parts; a question about a meeting that does not fit is refused. Needs that much memory on the Ollama machine.",
     "summary_lang": "Summary language",
     "summary_lang_help": "Language of summaries, decisions and action items.",
     "ui_lang": "Interface language",
@@ -212,6 +215,7 @@
     },
     "err_seconds": "Enter a whole number of seconds, 0 or more.",
     "err_threads": "Enter a whole number from 1 to 256.",
+    "err_context_tokens": "Enter a whole number of at least 1024.",
     "err_port": "Enter a port from 1 to 65535.",
     "err_absolute": "Enter an absolute path, starting with /.",
     "selftest": {

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::Llm;
-use crate::http::{check, lines};
+use crate::http::{Timeouts, check, lines, send_within};
 
 /// How long Ollama keeps the model loaded after a request.
 const KEEP_ALIVE: &str = "30m";
@@ -15,6 +15,8 @@ const KEEP_ALIVE: &str = "30m";
 pub struct Ollama {
     endpoint: String,
     model: String,
+    context_tokens: u32,
+    timeouts: Timeouts,
     client: reqwest::Client,
 }
 
@@ -36,16 +38,30 @@ struct ChatMessage {
 
 impl Ollama {
     /// `endpoint` is the server's base URL, e.g. `http://127.0.0.1:11434`.
-    pub fn new(endpoint: &str, model: &str) -> Self {
+    /// `context_tokens` is sent as `num_ctx` with every request.
+    pub fn new(endpoint: &str, model: &str, context_tokens: u32) -> Self {
+        let timeouts = Timeouts::default();
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
             model: model.to_string(),
-            client: reqwest::Client::new(),
+            context_tokens,
+            timeouts,
+            client: timeouts.client(),
         }
+    }
+
+    /// Replaces the default [`Timeouts`]; tests use short ones.
+    pub fn with_timeouts(mut self, timeouts: Timeouts) -> Self {
+        self.timeouts = timeouts;
+        self.client = timeouts.client();
+        self
     }
 
     /// Chat request body. Thinking is off because recall only wants the
     /// answer, and `complete` asks for JSON since its callers parse it.
+    /// `num_ctx` is set because Ollama's default context (2048 to 8192
+    /// tokens, depending on the version) silently drops the start of a
+    /// longer prompt.
     fn body(&self, system: &str, user: &str, stream: bool) -> Value {
         let mut body = json!({
             "model": self.model,
@@ -56,6 +72,7 @@ impl Ollama {
             "stream": stream,
             "think": false,
             "keep_alive": KEEP_ALIVE,
+            "options": {"num_ctx": self.context_tokens},
         });
         if !stream {
             body["format"] = json!("json");
@@ -63,23 +80,25 @@ impl Ollama {
         body
     }
 
-    async fn post(&self, body: &Value) -> Result<reqwest::Response> {
-        let url = format!("{}/api/chat", self.endpoint);
-        let resp = self
-            .client
-            .post(&url)
-            .json(body)
-            .send()
-            .await
-            .with_context(|| format!("POST {url}"))?;
-        check(resp, "Ollama").await
+    fn url(&self) -> String {
+        format!("{}/api/chat", self.endpoint)
     }
 }
 
 #[async_trait]
 impl Llm for Ollama {
     async fn complete(&self, system: &str, user: &str) -> Result<String> {
-        let resp = self.post(&self.body(system, user, false)).await?;
+        let url = self.url();
+        let request = self
+            .client
+            .post(&url)
+            .timeout(self.timeouts.total)
+            .json(&self.body(system, user, false));
+        let resp = check(
+            send_within(request, self.timeouts.total, &url).await?,
+            "Ollama",
+        )
+        .await?;
         let chunk: ChatChunk = resp.json().await.context("reading Ollama reply")?;
         if let Some(error) = chunk.error {
             bail!("Ollama: {error}");
@@ -91,8 +110,14 @@ impl Llm for Ollama {
     }
 
     async fn stream(&self, system: &str, user: &str, tx: mpsc::Sender<String>) -> Result<()> {
-        let resp = self.post(&self.body(system, user, true)).await?;
-        let mut lines = lines(resp);
+        let url = self.url();
+        let request = self.client.post(&url).json(&self.body(system, user, true));
+        let resp = check(
+            send_within(request, self.timeouts.idle, &url).await?,
+            "Ollama",
+        )
+        .await?;
+        let mut lines = lines(resp, self.timeouts.idle);
         while let Some(line) = lines.next().await? {
             let chunk: ChatChunk = serde_json::from_str(&line)
                 .with_context(|| format!("parsing Ollama stream line {line:?}"))?;
@@ -102,13 +127,13 @@ impl Llm for Ollama {
             if let Some(m) = chunk.message.filter(|m| !m.content.is_empty())
                 && tx.send(m.content).await.is_err()
             {
-                break;
+                return Ok(());
             }
             if chunk.done {
-                break;
+                return Ok(());
             }
         }
-        Ok(())
+        bail!("the Ollama stream ended before its last message (done: true)")
     }
 
     fn name(&self) -> String {

@@ -95,12 +95,25 @@ export const FIELDS = [
   'llm.backend',
   'llm.model',
   'llm.endpoint',
+  'llm.context_tokens',
   'summary_lang',
   'ui_lang',
   'port',
 ] as const;
 
 export type Field = (typeof FIELDS)[number];
+
+/**
+ * The `error` event text the server sends when a meeting's transcript does
+ * not fit `llm.context_tokens`; see `recall-server/src/ask.rs`.
+ */
+export const ASK_TOO_LONG =
+  'this meeting is too long for the current context; raise llm.context_tokens';
+
+/** The i18n key for an ask failure the UI explains itself, else null. */
+export function askErrorKey(message: string): string | null {
+  return message === ASK_TOO_LONG ? 'ask.too_long' : null;
+}
 
 /** The form field a server error message names, so it can show under that field. */
 export function fieldOfError(message: string): Field | null {

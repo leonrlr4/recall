@@ -7,22 +7,28 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::Llm;
-use crate::http::{check, lines};
+use crate::http::{Timeouts, check, lines, send_within};
 
 const BASE_URL: &str = "https://api.anthropic.com";
 const API_VERSION: &str = "2023-06-01";
-const MAX_TOKENS: u32 = 4096;
+/// Room for the reply. A summary of a long meeting (body, decisions,
+/// actions, chapters as JSON) can pass 4096 tokens; a reply cut there is
+/// invalid JSON.
+const MAX_TOKENS: u32 = 16_000;
 
 pub struct Claude {
     api_key: String,
     model: String,
     base_url: String,
+    timeouts: Timeouts,
     client: reqwest::Client,
 }
 
 #[derive(Deserialize)]
 struct MessageReply {
     content: Vec<ContentBlock>,
+    #[serde(default)]
+    stop_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +53,20 @@ struct StreamEvent {
 struct Delta {
     #[serde(default)]
     text: Option<String>,
+    /// Set on `message_delta` events.
+    #[serde(default)]
+    stop_reason: Option<String>,
+}
+
+/// Fails for a `stop_reason` that means the reply is incomplete or absent.
+fn check_stop_reason(reason: Option<&str>) -> Result<()> {
+    match reason {
+        Some("max_tokens") => {
+            bail!("Claude stopped at max_tokens ({MAX_TOKENS}); the reply is cut off")
+        }
+        Some("refusal") => bail!("Claude refused to answer"),
+        _ => Ok(()),
+    }
 }
 
 impl Claude {
@@ -55,12 +75,21 @@ impl Claude {
         let api_key = api_key
             .filter(|k| !k.is_empty())
             .context("the claude backend needs ANTHROPIC_API_KEY to be set")?;
+        let timeouts = Timeouts::default();
         Ok(Self {
             api_key,
             model: model.to_string(),
             base_url: BASE_URL.to_string(),
-            client: reqwest::Client::new(),
+            timeouts,
+            client: timeouts.client(),
         })
+    }
+
+    /// Replaces the default [`Timeouts`]; tests use short ones.
+    pub fn with_timeouts(mut self, timeouts: Timeouts) -> Self {
+        self.timeouts = timeouts;
+        self.client = timeouts.client();
+        self
     }
 
     /// Sends requests to `base_url` instead of `https://api.anthropic.com`.
@@ -78,16 +107,20 @@ impl Claude {
             "messages": [{"role": "user", "content": user}],
             "stream": stream,
         });
-        let resp = self
+        let mut request = self
             .client
             .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| format!("POST {url}"))?;
-        check(resp, "Claude API").await
+            .json(&body);
+        // A streamed reply is bounded by its idle timeout instead.
+        let wait = if stream {
+            self.timeouts.idle
+        } else {
+            request = request.timeout(self.timeouts.total);
+            self.timeouts.total
+        };
+        check(send_within(request, wait, &url).await?, "Claude API").await
     }
 }
 
@@ -96,6 +129,7 @@ impl Llm for Claude {
     async fn complete(&self, system: &str, user: &str) -> Result<String> {
         let resp = self.post(system, user, false).await?;
         let reply: MessageReply = resp.json().await.context("reading Claude reply")?;
+        check_stop_reason(reply.stop_reason.as_deref())?;
         Ok(reply
             .content
             .into_iter()
@@ -106,7 +140,7 @@ impl Llm for Claude {
 
     async fn stream(&self, system: &str, user: &str, tx: mpsc::Sender<String>) -> Result<()> {
         let resp = self.post(system, user, true).await?;
-        let mut lines = lines(resp);
+        let mut lines = lines(resp, self.timeouts.idle);
         while let Some(line) = lines.next().await? {
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
@@ -118,10 +152,13 @@ impl Llm for Claude {
                     if let Some(text) = event.delta.and_then(|d| d.text)
                         && tx.send(text).await.is_err()
                     {
-                        break;
+                        return Ok(());
                     }
                 }
-                "message_stop" => break,
+                "message_delta" => {
+                    check_stop_reason(event.delta.and_then(|d| d.stop_reason).as_deref())?;
+                }
+                "message_stop" => return Ok(()),
                 "error" => bail!(
                     "Claude API stream error: {}",
                     event.error.unwrap_or_default()
@@ -129,7 +166,7 @@ impl Llm for Claude {
                 _ => {}
             }
         }
-        Ok(())
+        bail!("the Claude stream ended before message_stop")
     }
 
     fn name(&self) -> String {

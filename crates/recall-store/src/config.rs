@@ -35,6 +35,11 @@ pub struct LlmConfig {
     pub backend: String,
     pub model: String,
     pub endpoint: String,
+    /// The model's context window in tokens. Ollama gets it as `num_ctx`
+    /// (its own default is far smaller and silently drops the start of a
+    /// long prompt), and it sizes the transcript sent in one call; see
+    /// [`LlmConfig::transcript_budget_chars`].
+    pub context_tokens: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -79,7 +84,18 @@ impl Default for LlmConfig {
             backend: "ollama".into(),
             model: "qwen3.6:35b-a3b".into(),
             endpoint: "http://127.0.0.1:11434".into(),
+            context_tokens: 32_768,
         }
+    }
+}
+
+impl LlmConfig {
+    /// The most transcript characters sent to the model in one call:
+    /// `context_tokens * 6 / 10`. Mixed Chinese and English transcripts run
+    /// at roughly one token per character or less, and the rest of the
+    /// window holds the prompt and the reply.
+    pub fn transcript_budget_chars(&self) -> usize {
+        self.context_tokens as usize * 6 / 10
     }
 }
 
@@ -168,6 +184,8 @@ mod tests {
         assert_eq!(config.llm.backend, "ollama");
         assert_eq!(config.llm.model, "qwen3.6:35b-a3b");
         assert_eq!(config.llm.endpoint, "http://127.0.0.1:11434");
+        assert_eq!(config.llm.context_tokens, 32_768);
+        assert_eq!(config.llm.transcript_budget_chars(), 19_660);
         assert_eq!(config.summary_lang, "zh-TW");
         assert_eq!(config.ui_lang, None);
         assert_eq!(config.stt.engine, "breeze");

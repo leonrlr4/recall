@@ -131,7 +131,8 @@
     "send": "提問",
     "stop": "停止",
     "stopped": "（已停止）",
-    "failed": "無法取得回答，請確認語言模型正在執行。"
+    "failed": "無法取得回答，請確認語言模型正在執行。",
+    "too_long": "這場會議太長，超過語言模型的上下文長度。請到設定調高「上下文長度」。"
   },
   "people": {
     "title": "人員",
@@ -195,6 +196,8 @@
     "llm_model_help": "使用 Ollama 時，填已下載的模型，例如 qwen3.6:35b-a3b。",
     "llm_endpoint": "Ollama 位址",
     "llm_endpoint_help": "Ollama 伺服器監聽的位址。",
+    "llm_context_tokens": "上下文長度（token）",
+    "llm_context_tokens_help": "模型一次能讀的文字量。較長的會議會分段摘要；放不下的會議無法提問。Ollama 那台機器需要對應的記憶體。",
     "summary_lang": "摘要語言",
     "summary_lang_help": "摘要、決議和待辦事項使用的語言。",
     "ui_lang": "介面語言",
@@ -212,6 +215,7 @@
     },
     "err_seconds": "請輸入 0 以上的整數秒數。",
     "err_threads": "請輸入 1 到 256 的整數。",
+    "err_context_tokens": "請輸入至少 1024 的整數。",
     "err_port": "請輸入 1 到 65535 的連接埠。",
     "err_absolute": "請輸入以 / 開頭的絕對路徑。",
     "selftest": {

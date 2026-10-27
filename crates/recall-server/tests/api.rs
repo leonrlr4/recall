@@ -101,18 +101,25 @@ fn sample(id: &MeetingId, title: &str, alice: &SpeakerId, text: &str) -> Meeting
 }
 
 async fn harness() -> Harness {
+    harness_with(|_| {}).await
+}
+
+/// Like [`harness`], with `tweak` applied to the config.
+async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
     let tmp = tempfile::tempdir().unwrap();
     // Bound first: the server only accepts requests addressed to its
     // configured port.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let config = Arc::new(Config {
+    let mut config = Config {
         meetings_dir: tmp.path().join("Meetings"),
         data_dir: tmp.path().join("data"),
         summary_lang: "en".into(),
         port: addr.port(),
         ..Config::default()
-    });
+    };
+    tweak(&mut config);
+    let config = Arc::new(config);
     let mut speakers = Speakers::default();
     let alice = speakers.add("Alice", Some(vec![1.0, 0.0]));
     speakers.save(&config.speakers_path()).unwrap();
@@ -471,6 +478,26 @@ async fn ask_streams_tokens_then_done() {
     assert_eq!(
         body,
         "data: The \n\ndata: answer\n\ndata: .\n\nevent: done\ndata: end\n\n"
+    );
+}
+
+#[tokio::test]
+async fn ask_over_the_context_budget_errors_without_calling_the_model() {
+    // 100 tokens leave a 60-character budget; the transcript alone is longer.
+    let h = harness_with(|c| c.llm.context_tokens = 100).await;
+    let body = reqwest::Client::new()
+        .post(h.url(&format!("/api/meetings/{}/ask", encode(WEEKLY))))
+        .json(&json!({ "question": "When is the release?" }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(
+        body,
+        "event: error\ndata: this meeting is too long for the current context; \
+         raise llm.context_tokens\n\nevent: done\ndata: end\n\n"
     );
 }
 

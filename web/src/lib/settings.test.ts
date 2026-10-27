@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyPatch, configDiff, fieldOfError, mergePatch, selftestVerdict, uiLangOf } from './settings';
+import { applyPatch, askErrorKey, configDiff, fieldOfError, mergePatch, selftestVerdict, uiLangOf } from './settings';
 import type { Config } from './types';
 
 const base: Config = {
@@ -10,7 +10,7 @@ const base: Config = {
   debounce_secs: 8,
   end_grace_secs: 30,
   min_length_secs: 120,
-  llm: { backend: 'ollama', model: 'qwen', endpoint: 'http://127.0.0.1:11434' },
+  llm: { backend: 'ollama', model: 'qwen', endpoint: 'http://127.0.0.1:11434', context_tokens: 32768 },
   summary_lang: 'zh-TW',
   stt: { engine: 'breeze', threads: 8 },
   port: 7474,
@@ -76,6 +76,14 @@ describe('settings helpers', () => {
     expect(fieldOfError('unknown config key "llm.modle"')).toBe(null);
     expect(fieldOfError('invalid config: invalid type for stt.threads')).toBe('stt.threads');
     expect(fieldOfError('disk full')).toBe(null);
+    expect(fieldOfError('invalid config: invalid type for llm.context_tokens')).toBe('llm.context_tokens');
+  });
+
+  it('ask_error_key_translates_the_context_error_only', () => {
+    expect(
+      askErrorKey('this meeting is too long for the current context; raise llm.context_tokens'),
+    ).toBe('ask.too_long');
+    expect(askErrorKey('Ollama returned 404')).toBe(null);
   });
 });
 

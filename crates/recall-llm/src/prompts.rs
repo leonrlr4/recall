@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use recall_store::markdown::clock;
-use recall_store::{ActionItem, Chapter, Summary};
+use recall_store::{ActionItem, Chapter, Segment, Side, Speakers, Summary};
 use serde::Deserialize;
 
 /// How much of the raw model output a parse error quotes.
@@ -62,6 +62,28 @@ pub fn ask_prompt(lang: &str) -> String {
          Keep English technical terms, product names and people's names exactly as spoken.\n\
          {rules}"
     )
+}
+
+/// Name shown for a remote line no speaker was found for.
+pub const UNKNOWN_REMOTE: &str = "Remote";
+
+/// A meeting's transcript as `"[mm:ss] Name: text"` lines, with speaker ids
+/// resolved to names. A line without a speaker is shown as me on the
+/// microphone side and as [`UNKNOWN_REMOTE`] on the other. Summaries and
+/// questions both send this text.
+pub fn meeting_transcript(segments: &[Segment], speakers: &Speakers) -> String {
+    let lines: Vec<(String, u32, String)> = segments
+        .iter()
+        .map(|s| {
+            let name = match (&s.speaker, s.side) {
+                (Some(id), _) => speakers.name_of(id),
+                (None, Side::Me) => speakers.me().name.clone(),
+                (None, Side::Them) => UNKNOWN_REMOTE.into(),
+            };
+            (name, s.start_ms, s.text.clone())
+        })
+        .collect();
+    transcript_text(&lines)
 }
 
 /// Formats `(speaker, start_ms, text)` triples as `"[01:32] Tom: text"`
@@ -178,6 +200,32 @@ mod tests {
             "[01:32] Tom: Ship it Friday.\n[1:02:03] Leon: OK.\n"
         );
         assert_eq!(transcript_text(&[]), "");
+    }
+
+    #[test]
+    fn meeting_transcript_names_unknown_lines_by_side() {
+        let mut speakers = Speakers::default();
+        let tom = speakers.add("Tom", None);
+        let line =
+            |start_ms, side, speaker: Option<&recall_store::SpeakerId>, text: &str| Segment {
+                start_ms,
+                end_ms: start_ms + 500,
+                side,
+                speaker: speaker.cloned(),
+                text: text.into(),
+            };
+        let segments = [
+            line(0, Side::Me, None, "Morning."),
+            line(2_000, Side::Them, Some(&tom), "Ship it."),
+            line(5_000, Side::Them, None, "Agreed."),
+        ];
+        assert_eq!(
+            meeting_transcript(&segments, &speakers),
+            format!(
+                "[00:00] {}: Morning.\n[00:02] Tom: Ship it.\n[00:05] Remote: Agreed.\n",
+                speakers.me().name
+            )
+        );
     }
 
     #[test]

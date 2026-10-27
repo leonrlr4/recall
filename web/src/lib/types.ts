@@ -125,6 +125,8 @@ export interface LlmConfig {
   backend: string;
   model: string;
   endpoint: string;
+  /** Context window in tokens; Ollama gets it as `num_ctx`. */
+  context_tokens: number;
 }
 
 export interface SttConfig {

@@ -14,8 +14,11 @@ use recall_store::LlmConfig;
 use tokio::sync::mpsc;
 
 pub use claude::Claude;
+pub use http::Timeouts;
 pub use ollama::Ollama;
-pub use prompts::{ask_prompt, parse_summary, summary_prompt, transcript_text};
+pub use prompts::{
+    UNKNOWN_REMOTE, ask_prompt, meeting_transcript, parse_summary, summary_prompt, transcript_text,
+};
 
 /// Model used for the Claude backend when the config names none of its own.
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-5-5";
@@ -37,7 +40,11 @@ pub trait Llm: Send + Sync {
 /// from `ANTHROPIC_API_KEY` and fails when it is unset.
 pub fn from_config(cfg: &LlmConfig) -> Result<Arc<dyn Llm>> {
     match cfg.backend.as_str() {
-        "ollama" => Ok(Arc::new(Ollama::new(&cfg.endpoint, &cfg.model))),
+        "ollama" => Ok(Arc::new(Ollama::new(
+            &cfg.endpoint,
+            &cfg.model,
+            cfg.context_tokens,
+        ))),
         "claude" => {
             let key = std::env::var("ANTHROPIC_API_KEY").ok();
             Ok(Arc::new(Claude::new(key, &claude_model(cfg))?))

@@ -178,6 +178,7 @@ port = 7474
 backend = "ollama"                     # "ollama" or "claude"
 model = "qwen3.6:35b-a3b"
 endpoint = "http://127.0.0.1:11434"    # Ollama only
+context_tokens = 32768                 # model context; see below
 
 [stt]
 engine = "breeze"
@@ -195,6 +196,13 @@ Summaries and the "ask this meeting" box use one of two backends.
   `systemctl --user edit recall` and an `Environment=` line). A `model`
   that is empty or starts with `qwen` (such as the Ollama default) is replaced
   by `claude-sonnet-5-5`; set `model` to another Claude model name to use that.
+
+`context_tokens` is the model's context window. Ollama gets it as `num_ctx`
+(Ollama's own default is a few thousand tokens and silently drops the start of
+a longer transcript), so the Ollama machine needs the memory for it. A
+transcript longer than `context_tokens * 0.6` characters is summarized in parts
+that are then merged, and a question about such a meeting is refused with
+"this meeting is too long for the current context; raise llm.context_tokens".
 
 ## GPU transcription
 

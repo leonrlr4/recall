@@ -33,8 +33,6 @@ const MERGE_GAP_MS: u32 = 300;
 const MAX_REGION_MS: u32 = 30_000;
 /// Cosine similarity a cluster needs to be named after a known person.
 const NAME_THRESHOLD: f32 = 0.6;
-/// Longest transcript, in characters, summarized in one model call.
-const SUMMARY_CHUNK_CHARS: usize = 60_000;
 
 /// The models one pipeline run uses.
 pub struct Engines {
@@ -244,7 +242,7 @@ impl Run<'_> {
             &self.meeting.segments,
             self.speakers,
             &self.config.summary_lang,
-            SUMMARY_CHUNK_CHARS,
+            self.config.llm.transcript_budget_chars(),
         )
         .await?;
         self.meeting.summary = Some(summary);

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ask } from '../lib/api';
   import { t } from '../lib/i18n';
+  import { askErrorKey } from '../lib/settings';
 
   let { id }: { id: string } = $props();
 
@@ -70,9 +71,14 @@
             </p>
           {/if}
           {#if turn.state === 'error'}
+            {@const known = turn.error ? askErrorKey(turn.error) : null}
             <p class="a err" role="alert">
-              {t('ask.failed')}
-              {#if turn.error}<span class="err-detail">{turn.error}</span>{/if}
+              {#if known}
+                {t(known)}
+              {:else}
+                {t('ask.failed')}
+                {#if turn.error}<span class="err-detail">{turn.error}</span>{/if}
+              {/if}
             </p>
           {/if}
         </div>

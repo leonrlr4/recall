@@ -1,12 +1,8 @@
-//! Meeting summaries and questions about a transcript, through an [`Llm`].
+//! Meeting summaries through an [`Llm`].
 
 use anyhow::{Context, Result};
-use recall_llm::{Llm, ask_prompt, parse_summary, summary_prompt, transcript_text};
-use recall_store::{Segment, Side, Speakers, Summary};
-use tokio::sync::mpsc;
-
-/// Name shown for a remote line no speaker was found for.
-const UNKNOWN_REMOTE: &str = "Remote";
+use recall_llm::{Llm, meeting_transcript, parse_summary, summary_prompt};
+use recall_store::{Segment, Speakers, Summary};
 
 /// System prompt for merging the summaries of consecutive parts of one long
 /// meeting: the summary prompt, which fixes the output keys and language,
@@ -44,7 +40,7 @@ pub async fn summarize(
     if segments.is_empty() {
         return Ok(Summary::default());
     }
-    let text = transcript(segments, speakers);
+    let text = meeting_transcript(segments, speakers);
     let system = summary_prompt(lang);
     let mut summary = if text.chars().count() <= max_chars {
         parse_summary(&llm.complete(&system, &text).await?)?
@@ -62,42 +58,6 @@ pub async fn summarize(
         chapter.start_ms = chapter.start_ms.min(end_ms);
     }
     Ok(summary)
-}
-
-/// Streams `llm`'s answer to `question` about the transcript to `tx`.
-pub async fn ask(
-    llm: &dyn Llm,
-    segments: &[Segment],
-    speakers: &Speakers,
-    question: &str,
-    lang: &str,
-    tx: mpsc::Sender<String>,
-) -> Result<()> {
-    let transcript = transcript(segments, speakers);
-    llm.stream(
-        &ask_prompt(lang),
-        &format!("{transcript}\n\nQuestion: {question}"),
-        tx,
-    )
-    .await
-}
-
-/// The transcript as `"[mm:ss] Name: text"` lines, with speaker ids
-/// resolved to names. A line without a speaker is shown as me on the
-/// microphone side and as [`UNKNOWN_REMOTE`] on the other.
-fn transcript(segments: &[Segment], speakers: &Speakers) -> String {
-    let lines: Vec<(String, u32, String)> = segments
-        .iter()
-        .map(|s| {
-            let name = match (&s.speaker, s.side) {
-                (Some(id), _) => speakers.name_of(id),
-                (None, Side::Me) => speakers.me().name.clone(),
-                (None, Side::Them) => UNKNOWN_REMOTE.into(),
-            };
-            (name, s.start_ms, s.text.clone())
-        })
-        .collect();
-    transcript_text(&lines)
 }
 
 /// `text` cut into pieces of at most `max_chars` characters, each ending at
@@ -137,7 +97,8 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use recall_store::SpeakerId;
+    use recall_store::{Side, SpeakerId};
+    use tokio::sync::mpsc;
 
     use super::*;
 
@@ -343,27 +304,6 @@ mod tests {
         let text = format!("{err:#}");
         assert!(text.starts_with("summary of part 2: "), "{text}");
         assert!(text.contains("not a summary"), "{text}");
-    }
-
-    #[tokio::test]
-    async fn ask_streams_answer_to_question_after_transcript() {
-        let (segments, speakers) = meeting();
-        let llm = FakeLlm::new(|_, _| "Tom said Friday [00:02].".into());
-        let (tx, mut rx) = mpsc::channel(16);
-
-        ask(&llm, &segments, &speakers, "When do we ship?", "zh-TW", tx)
-            .await
-            .unwrap();
-
-        let mut answer = String::new();
-        while let Some(piece) = rx.recv().await {
-            answer.push_str(&piece);
-        }
-        assert_eq!(answer, "Tom said Friday [00:02].");
-        let calls = llm.calls();
-        assert_eq!(calls[0].0, ask_prompt("zh-TW"));
-        assert!(calls[0].1.starts_with("[00:00] Me: Morning.\n"));
-        assert!(calls[0].1.ends_with("\n\nQuestion: When do we ship?"));
     }
 
     #[test]

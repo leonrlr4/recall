@@ -7,7 +7,6 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
-use recall_store::Side;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
@@ -17,8 +16,11 @@ use crate::meetings::{load, open_dir};
 
 /// Tokens buffered between the LLM task and the response.
 const TOKEN_BUFFER: usize = 64;
-/// Name for a remote segment without a speaker; matches the index.
-const THEM: &str = "Them";
+/// The `error` event sent instead of asking the model when the transcript
+/// and question do not fit the configured context. The web UI matches this
+/// text to show it translated.
+pub const TOO_LONG: &str =
+    "this meeting is too long for the current context; raise llm.context_tokens";
 
 #[derive(Deserialize)]
 pub struct AskBody {
@@ -27,7 +29,10 @@ pub struct AskBody {
 
 /// Streams the answer as `data: <token>` events. The stream ends with
 /// `event: done` (data `end`), preceded by `event: error` (data: the message)
-/// if the model failed.
+/// if the model failed. A transcript plus question longer than
+/// [`recall_store::LlmConfig::transcript_budget_chars`] gets the [`TOO_LONG`]
+/// error without calling the model, since the model would see only part of
+/// it.
 pub async fn ask(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -39,30 +44,23 @@ pub async fn ask(
     }
     let dir = open_dir(&state.config, &id)?;
     let meeting = load(&dir)?;
-    let lines: Vec<(String, u32, String)> = {
+    let transcript = {
         let speakers = state.speakers.lock().expect("speakers lock poisoned");
-        meeting
-            .segments
-            .iter()
-            .map(|s| {
-                let name = match (&s.speaker, s.side) {
-                    (Some(id), _) => speakers.name_of(id),
-                    (None, Side::Me) => speakers.me().name.clone(),
-                    (None, Side::Them) => THEM.to_string(),
-                };
-                (name, s.start_ms, s.text.clone())
-            })
-            .collect()
+        recall_llm::meeting_transcript(&meeting.segments, &speakers)
     };
+    let fits = transcript.chars().count() + question.chars().count()
+        <= state.config.llm.transcript_budget_chars();
     let system = recall_llm::ask_prompt(&state.config.summary_lang);
-    let user = format!(
-        "Transcript:\n{}\nQuestion: {question}",
-        recall_llm::transcript_text(&lines)
-    );
+    let user = format!("Transcript:\n{transcript}\nQuestion: {question}");
 
     let (tx, mut rx) = mpsc::channel::<String>(TOKEN_BUFFER);
     let llm = state.llm.clone();
-    let task = tokio::spawn(async move { llm.stream(&system, &user, tx).await });
+    let task = tokio::spawn(async move {
+        if !fits {
+            anyhow::bail!(TOO_LONG);
+        }
+        llm.stream(&system, &user, tx).await
+    });
 
     let stream = async_stream::stream! {
         while let Some(token) = rx.recv().await {

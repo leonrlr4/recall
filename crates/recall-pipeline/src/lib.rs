@@ -26,6 +26,6 @@ pub use diarize::{Diarizer, SherpaDiarizer, Turn};
 pub use merge::merge_sides;
 pub use models::{ModelId, ModelSpec};
 pub use naming::{apply_names, assign_clusters, name_clusters};
-pub use summarize::{ask, merge_prompt, summarize};
+pub use summarize::{merge_prompt, summarize};
 pub use transcribe::{Transcriber, Utterance, WhisperTranscriber, Word, to_traditional};
 pub use vad::{Region, SileroVad, Vad, drop_echo, merge_close};
