@@ -3,7 +3,8 @@ import type { Config, ConfigPatch } from './types';
 /** A track whose loudest block stays at or below this is reported silent. */
 export const SILENCE_PEAK = 0.02;
 
-export type Verdict = 'ok' | 'mic_silent' | 'sys_silent' | 'both_silent';
+export const VERDICTS = ['ok', 'mic_silent', 'sys_silent', 'both_silent'] as const;
+export type Verdict = (typeof VERDICTS)[number];
 
 /** Judges a self-test from the peak levels of the two tracks. */
 export function selftestVerdict(mic: number[], sys: number[]): Verdict {
@@ -17,6 +18,13 @@ export function selftestVerdict(mic: number[], sys: number[]): Verdict {
 }
 
 export type UiLang = 'auto' | 'zh-TW' | 'en';
+
+// Choices the settings form offers; each has a `settings.backend.*` or
+// `settings.lang.*` string.
+export const STT_ENGINES = ['breeze'];
+export const BACKENDS = ['ollama', 'claude'];
+export const SUMMARY_LANGS = ['zh-TW', 'en'];
+export const UI_LANGS: UiLang[] = ['auto', 'zh-TW', 'en'];
 
 /** The settings select value for a config `ui_lang`; unset means follow the browser. */
 export function uiLangOf(v: string | null | undefined): UiLang {
@@ -49,6 +57,28 @@ export function configDiff(prev: Config, next: Config): ConfigPatch {
     }
   }
   return out as ConfigPatch;
+}
+
+/**
+ * `config` with `patch` written over it, the way `PUT /api/config` merges:
+ * sections key by key, `ui_lang: null` removes the language.
+ */
+export function applyPatch(config: Config, patch: ConfigPatch): Config {
+  const out = structuredClone(config);
+  const { llm, stt, ...top } = patch;
+  Object.assign(out, top);
+  if (llm) Object.assign(out.llm, llm);
+  if (stt) Object.assign(out.stt, stt);
+  if (out.ui_lang === null) delete out.ui_lang;
+  return out;
+}
+
+/** One patch with the effect of `a` then `b`. */
+export function mergePatch(a: ConfigPatch, b: ConfigPatch): ConfigPatch {
+  const out: ConfigPatch = { ...a, ...b };
+  if (a.llm || b.llm) out.llm = { ...a.llm, ...b.llm };
+  if (a.stt || b.stt) out.stt = { ...a.stt, ...b.stt };
+  return out;
 }
 
 /** Form fields, dotted for section keys, in the order the form shows them. */

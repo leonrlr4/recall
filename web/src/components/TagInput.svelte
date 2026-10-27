@@ -9,10 +9,15 @@
 
   let draft = $state('');
 
+  /** Adds the draft; pasted text such as `zoom, slack` adds one tag per item. */
   function add() {
-    const v = draft.trim().replace(/,$/, '').trim();
+    const next = [...tags];
+    for (const part of draft.split(',')) {
+      const v = part.trim();
+      if (v && !next.includes(v)) next.push(v);
+    }
     draft = '';
-    if (v && !tags.includes(v)) tags = [...tags, v];
+    if (next.length !== tags.length) tags = next;
   }
 
   function remove(i: number) {

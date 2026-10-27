@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import en from '../i18n/en.json';
 import zhTW from '../i18n/zh-TW.json';
 import { detectLocale, format } from './i18n';
+import { BACKENDS, SUMMARY_LANGS, UI_LANGS, VERDICTS } from './settings';
+import { STEPS } from './types';
 
 function keys(obj: Record<string, unknown>, prefix = ''): string[] {
   return Object.entries(obj).flatMap(([k, v]) =>
@@ -38,22 +40,41 @@ describe('i18n', () => {
   });
 
   it('every_literal_t_key_exists', () => {
-    // Literal keys only; template keys such as `step.${s}` are built from
-    // enums whose members the parity test above already covers.
-    const sources = import.meta.glob('../**/*.svelte', {
+    // Literal keys in any quote style; template keys with `${` are covered by
+    // dynamic_key_families_exist below.
+    const sources = import.meta.glob(['../**/*.svelte', '../**/*.ts', '!../**/*.test.ts'], {
       query: '?raw',
       import: 'default',
       eager: true,
     }) as Record<string, string>;
-    expect(Object.keys(sources).length).toBeGreaterThan(0);
+    expect(Object.keys(sources).some((f) => f.endsWith('.ts'))).toBe(true);
+    expect(Object.keys(sources).some((f) => f.endsWith('.svelte'))).toBe(true);
     const known = new Set(keys(en));
+    const found: string[] = [];
     const missing: string[] = [];
     for (const [file, src] of Object.entries(sources)) {
-      for (const m of src.matchAll(/\bt\(\s*'([^']+)'/g)) {
-        if (!known.has(m[1])) missing.push(`${file}: ${m[1]}`);
+      for (const m of src.matchAll(/\bt\(\s*(['"`])([^'"`]+?)\1/g)) {
+        if (m[2].includes('${')) continue;
+        found.push(m[2]);
+        if (!known.has(m[2])) missing.push(`${file}: ${m[2]}`);
       }
     }
+    expect(found).toContain('settings.title');
     expect(missing).toEqual([]);
+  });
+
+  it('dynamic_key_families_exist', () => {
+    const expanded = [
+      ...VERDICTS.map((v) => `settings.selftest.${v}`),
+      ...BACKENDS.map((b) => `settings.backend.${b}`),
+      ...UI_LANGS.map((l) => `settings.lang.${l}`),
+      ...SUMMARY_LANGS.map((l) => `settings.lang.${l}`),
+      ...STEPS.map((s) => `step.${s}`),
+    ];
+    for (const dict of [en, zhTW]) {
+      const known = new Set(keys(dict));
+      expect(expanded.filter((k) => !known.has(k))).toEqual([]);
+    }
   });
 
   it('format_fills_named_params', () => {

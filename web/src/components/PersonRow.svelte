@@ -28,7 +28,7 @@
   let input = $state<HTMLInputElement>();
   let button = $state<HTMLButtonElement>();
 
-  /** Closes the editor and puts focus back on the name, for keyboard users. */
+  /** Closes the editor without saving and puts focus back on the name. */
   async function close() {
     editing = false;
     await tick();
@@ -36,16 +36,27 @@
   }
 
   async function edit() {
+    if (busy) return;
     draft = person.name;
     editing = true;
     await tick();
     input?.select();
   }
 
-  async function save() {
+  /**
+   * Closes the editor and saves. `refocus` (Enter) puts focus back on the
+   * name; a blur save leaves focus where the user moved it. The name button
+   * stays focusable while the PATCH runs (aria-disabled, not disabled), so
+   * the focus survives `busy`.
+   */
+  async function save(refocus: boolean) {
     if (!editing) return;
     const name = draft.trim();
-    close();
+    editing = false;
+    if (refocus) {
+      await tick();
+      button?.focus();
+    }
     if (!name || name === person.name) return;
     try {
       await onrename(name);
@@ -53,6 +64,8 @@
       // The page shows the error; reopen with what was typed.
       draft = name;
       editing = true;
+      await tick();
+      input?.focus();
     }
   }
 
@@ -60,7 +73,7 @@
     if (e.isComposing) return;
     if (e.key === 'Enter') {
       e.preventDefault();
-      save();
+      save(true);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       close();
@@ -87,10 +100,10 @@
           aria-label={t('people.name_label', { name: person.name })}
           aria-describedby="people-edit-hint"
           onkeydown={key}
-          onblur={save}
+          onblur={() => save(false)}
         />
       {:else}
-        <button bind:this={button} class="name-btn" onclick={edit} disabled={busy} title={t('people.rename')}>
+        <button bind:this={button} class="name-btn" onclick={edit} aria-disabled={busy} title={t('people.rename')}>
           {person.name}
           {#if isMe}<span class="me-tag">{t('people.you')}</span>{/if}
         </button>
@@ -161,11 +174,11 @@
     transition: background 120ms;
   }
 
-  .name-btn:hover:not(:disabled) {
+  .name-btn:hover:not([aria-disabled='true']) {
     background: var(--hover);
   }
 
-  .name-btn:disabled {
+  .name-btn[aria-disabled='true'] {
     cursor: default;
   }
 

@@ -9,6 +9,7 @@
   let loadError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
   let busy = $state(false);
+  let heading = $state<HTMLHeadingElement>();
 
   async function load() {
     try {
@@ -44,14 +45,17 @@
 
   function merge(from: Person, into: Person) {
     if (!confirm(t('people.merge_confirm', { from: from.name, into: into.name }))) return;
-    change(from.id, { merge_into: into.id }).catch(() => {});
+    // The merged row disappears, taking focus with it; park focus on the heading.
+    change(from.id, { merge_into: into.id })
+      .catch(() => {})
+      .finally(() => heading?.focus());
   }
 
   const onlyMe = $derived(list !== null && list.every((p) => p.id === 'me'));
 </script>
 
 <div class="page">
-  <h1>{t('people.title')}</h1>
+  <h1 bind:this={heading} tabindex="-1">{t('people.title')}</h1>
   <p class="muted intro">{t('people.intro')}</p>
 
   {#if actionError}
@@ -105,6 +109,7 @@
   }
 
   h1 {
+    outline: none;
     font-size: 24px;
     margin-bottom: 8px;
   }

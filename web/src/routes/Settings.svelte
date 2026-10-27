@@ -4,10 +4,17 @@
   import TagInput from '../components/TagInput.svelte';
   import { getConfig, putConfig, selftest } from '../lib/api';
   import { followBrowserLocale, setLocale, t } from '../lib/i18n';
+  import { savedConfig } from '../lib/saved.svelte';
   import {
+    applyPatch,
+    BACKENDS,
     configDiff,
     fieldOfError,
+    mergePatch,
     selftestVerdict,
+    STT_ENGINES,
+    SUMMARY_LANGS,
+    UI_LANGS,
     uiLangOf,
     type Field,
     type UiLang,
@@ -17,10 +24,6 @@
 
   /** Seconds the self-test records; the server decides, this only drives the countdown. */
   const SELFTEST_SECS = 5;
-  const STT_ENGINES = ['breeze'];
-  const BACKENDS = ['ollama', 'claude'];
-  const SUMMARY_LANGS = ['zh-TW', 'en'];
-  const UI_LANGS: UiLang[] = ['auto', 'zh-TW', 'en'];
 
   /** What the daemon runs with, or what was last saved; the diff base. */
   let saved = $state<Config | null>(null);
@@ -29,7 +32,6 @@
   let saving = $state(false);
   let formError = $state<string | null>(null);
   let serverErrors = $state<Partial<Record<Field, string>>>({});
-  let restartNeeded = $state(false);
   let savedFlash = $state(false);
 
   let testing = $state(false);
@@ -40,7 +42,7 @@
 
   onMount(async () => {
     try {
-      const c = await getConfig();
+      const c = applyPatch(await getConfig(), savedConfig.patch);
       saved = c;
       form = structuredClone(c);
     } catch (e) {
@@ -88,18 +90,22 @@
     formError = null;
     serverErrors = {};
     const sent = $state.snapshot(form);
+    // `patch` is derived from `saved`, so hold this save's copy before
+    // `saved` moves.
+    const body = $state.snapshot(patch);
     try {
-      const res = await putConfig(patch);
+      const res = await putConfig(body);
       // GET /api/config keeps returning the running config until a restart,
       // so the saved values become the new diff base here.
       saved = sent;
-      if (res.restart_required) restartNeeded = true;
+      savedConfig.patch = mergePatch($state.snapshot(savedConfig.patch), body);
+      if (res.restart_required) savedConfig.restartNeeded = true;
       savedFlash = true;
       setTimeout(() => (savedFlash = false), 3000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const field = fieldOfError(msg);
-      if (field) serverErrors = { [field]: msg };
+      if (field && shown(field)) serverErrors = { [field]: msg };
       else formError = msg;
     } finally {
       saving = false;
@@ -140,6 +146,9 @@
     }
   }
 
+  /** Whether the form currently renders `f`; the endpoint is only shown for Ollama. */
+  const shown = (f: Field) => f !== 'llm.endpoint' || form?.llm.backend === 'ollama';
+
   const id = (f: Field) => `f-${f.replace('.', '-')}`;
   const describedby = (f: Field) => `${id(f)}-help${errors[f] ? ` ${id(f)}-err` : ''}`;
 </script>
@@ -154,7 +163,7 @@
 <div class="page">
   <h1>{t('settings.title')}</h1>
 
-  {#if restartNeeded}
+  {#if savedConfig.restartNeeded}
     <div class="restart" role="status">
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
         <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5V5h-2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />

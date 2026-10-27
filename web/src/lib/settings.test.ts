@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configDiff, fieldOfError, selftestVerdict, uiLangOf } from './settings';
+import { applyPatch, configDiff, fieldOfError, mergePatch, selftestVerdict, uiLangOf } from './settings';
 import type { Config } from './types';
 
 const base: Config = {
@@ -76,5 +76,30 @@ describe('settings helpers', () => {
     expect(fieldOfError('unknown config key "llm.modle"')).toBe(null);
     expect(fieldOfError('invalid config: invalid type for stt.threads')).toBe('stt.threads');
     expect(fieldOfError('disk full')).toBe(null);
+  });
+});
+
+describe('applyPatch', () => {
+  it('apply_patch_merges_sections_key_by_key', () => {
+    const out = applyPatch(base, { port: 8000, llm: { model: 'llama' } });
+    expect(out.port).toBe(8000);
+    expect(out.llm).toEqual({ ...base.llm, model: 'llama' });
+    expect(base.port).toBe(7474);
+  });
+
+  it('apply_patch_null_ui_lang_removes_it', () => {
+    const out = applyPatch({ ...clone(base), ui_lang: 'en' }, { ui_lang: null });
+    expect('ui_lang' in out).toBe(false);
+  });
+
+  it('merge_patch_keeps_both_sides_and_later_wins', () => {
+    expect(
+      mergePatch({ port: 1, llm: { model: 'a' } }, { llm: { endpoint: 'e' }, port: 2 }),
+    ).toEqual({ port: 2, llm: { model: 'a', endpoint: 'e' } });
+  });
+
+  it('diff_of_applied_patch_round_trips', () => {
+    const patch = { allowlist: ['zoom'], stt: { threads: 4 } };
+    expect(configDiff(base, applyPatch(base, patch))).toEqual(patch);
   });
 });
