@@ -4,7 +4,12 @@
 
   let { id }: { id: string } = $props();
 
-  type Turn = { q: string; a: string; state: 'streaming' | 'done' | 'error' | 'stopped' };
+  type Turn = {
+    q: string;
+    a: string;
+    state: 'streaming' | 'done' | 'error' | 'stopped';
+    error?: string;
+  };
   let turns = $state<Turn[]>([]);
   let question = $state('');
   let ctl: AbortController | null = null;
@@ -31,7 +36,12 @@
       );
       turn.state = 'done';
     } catch (err) {
-      turn.state = ctl?.signal.aborted ? 'stopped' : 'error';
+      if (ctl?.signal.aborted) {
+        turn.state = 'stopped';
+      } else {
+        turn.state = 'error';
+        turn.error = err instanceof Error ? err.message : String(err);
+      }
     } finally {
       ctl = null;
     }
@@ -53,14 +63,18 @@
       {#each turns as turn, i (i)}
         <div class="turn">
           <p class="q">{turn.q}</p>
-          <p class="a" class:err={turn.state === 'error'}>
-            {#if turn.state === 'error'}
-              {t('ask.failed')}
-            {:else}
+          {#if turn.a || turn.state !== 'error'}
+            <p class="a">
               {turn.a}{#if turn.state === 'streaming'}<span class="caret" aria-hidden="true"></span>{/if}
               {#if turn.state === 'stopped'}<span class="muted"> {t('ask.stopped')}</span>{/if}
-            {/if}
-          </p>
+            </p>
+          {/if}
+          {#if turn.state === 'error'}
+            <p class="a err" role="alert">
+              {t('ask.failed')}
+              {#if turn.error}<span class="err-detail">{turn.error}</span>{/if}
+            </p>
+          {/if}
         </div>
       {/each}
     </div>
@@ -126,6 +140,14 @@
 
   .a.err {
     color: var(--danger);
+  }
+
+  .err-detail {
+    display: block;
+    margin-top: 4px;
+    font-family: var(--mono);
+    font-size: 13px;
+    opacity: 0.85;
   }
 
   .caret {

@@ -59,17 +59,11 @@ function json(method: string, body: unknown): RequestInit {
   };
 }
 
-/**
- * Lists meetings. The server answers a bare array without `q` and
- * `{ meetings, hits }` with it; both come back as `{ meetings, hits }`.
- */
+/** Lists meetings; `hits` holds the transcript matches when `q` is set. */
 export async function listMeetings(
   filter: ListFilter,
 ): Promise<{ meetings: MeetingRow[]; hits: Hit[] }> {
-  const body = await request<MeetingRow[] | { meetings: MeetingRow[]; hits?: Hit[] }>(
-    listUrl(filter),
-  );
-  if (Array.isArray(body)) return { meetings: body, hits: [] };
+  const body = await request<{ meetings: MeetingRow[]; hits?: Hit[] }>(listUrl(filter));
   return { meetings: body.meetings, hits: body.hits ?? [] };
 }
 
@@ -140,7 +134,9 @@ export function parseSse() {
 /**
  * Asks a question about a meeting and streams the answer. `EventSource`
  * cannot POST, so the SSE body is read from `fetch` directly. Resolves when
- * the server sends `event: done` or closes the stream.
+ * the server sends `event: done` or closes the stream; rejects with an
+ * `ApiError` carrying the message when it sends `event: error` (the model
+ * failed mid-answer).
  */
 export async function ask(
   id: string,
@@ -160,6 +156,7 @@ export async function ask(
       if (done) return;
       for (const msg of parser.push(value)) {
         if (msg.event === 'done') return;
+        if (msg.event === 'error') throw new ApiError(0, msg.data);
         if (msg.event === 'message') onToken(msg.data);
       }
     }

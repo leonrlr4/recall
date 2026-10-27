@@ -11,7 +11,13 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:7474',
+      // The server's `is_same_origin` guard rejects requests whose Host or
+      // Origin is not its own address, which the dev server's would be.
+      '/api': {
+        target: 'http://127.0.0.1:7474',
+        changeOrigin: true,
+        configure: (proxy) => proxy.on('proxyReq', (req) => req.removeHeader('origin')),
+      },
     },
   },
   test: {

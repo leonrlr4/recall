@@ -10,10 +10,11 @@ export const BINS = 600;
 
 /**
  * Sample rate the audio is decoded at. Decoding resamples to the context
- * rate, and an hour of stereo at 48 kHz is ~1.4 GB of floats; at 4 kHz it is
- * ~115 MB, while the amplitude envelope at 600 bins looks the same.
+ * rate, and an hour of stereo at 48 kHz is ~1.4 GB of floats; at 8 kHz it is
+ * ~230 MB, while the amplitude envelope at 600 bins looks the same. Do not go
+ * lower: Firefox rejects OfflineAudioContext rates below 8000.
  */
-const DECODE_RATE = 4000;
+const DECODE_RATE = 8000;
 
 /** Max absolute sample per bin, for each channel. */
 export function peaksFrom(channels: Float32Array[], bins = BINS): Peaks {

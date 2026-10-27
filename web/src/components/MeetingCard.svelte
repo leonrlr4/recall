@@ -54,7 +54,7 @@
       {/if}
       {#if faces.length}
         <span class="faces" aria-label={row.participants.join(', ')}>
-          {#each faces as name (name)}
+          {#each faces as name, i (i)}
             <span class="face" style:background={speakerColor(name)} title={name}>
               {initials(name)}
             </span>

@@ -11,6 +11,7 @@
   import { ignoreKey } from '../lib/keys';
   import { live } from '../lib/live.svelte';
   import { link, meetingPath, navigate } from '../lib/router';
+  import { shiftAfterDelete } from '../lib/transcript';
   import { STEPS, type MeetingDetail, type Segment, type Step } from '../lib/types';
 
   let { id, startMs = null }: { id: string; startMs?: number | null } = $props();
@@ -24,6 +25,9 @@
   let currentMs = $state(0);
   let cursor = $state<number | null>(null);
   let editing = $state<number | null>(null);
+  /** A segment PATCH is in flight. Segment edits address lines by index, so
+   *  they run one at a time to keep each index valid for the response. */
+  let pending = $state(false);
 
   let titleEditing = $state(false);
   let titleDraft = $state('');
@@ -148,11 +152,15 @@
 
   async function patch(body: Parameters<typeof patchMeeting>[1]) {
     if (!detail) return;
+    if (pending) throw new Error('a segment edit is already in flight');
+    pending = true;
     try {
       detail.meeting = await patchMeeting(id, body);
     } catch (e) {
       flash(t('meeting.save_failed', { error: e instanceof Error ? e.message : String(e) }), 'err');
       throw e;
+    } finally {
+      pending = false;
     }
   }
 
@@ -161,7 +169,7 @@
   }
 
   function nextSpeaker(index: number) {
-    if (speakers.length < 2) return;
+    if (speakers.length < 2 || pending) return;
     const cur = segments[index].speaker;
     const at = cur ? speakers.indexOf(cur) : -1;
     const speaker = speakers[(at + 1) % speakers.length];
@@ -169,9 +177,11 @@
   }
 
   function deleteLine(index: number) {
+    if (pending) return;
     patch({ segments: [{ index, delete: true }] })
       .then(() => {
-        if (cursor !== null && cursor >= segments.length) cursor = segments.length - 1;
+        editing = shiftAfterDelete(editing, index);
+        cursor = shiftAfterDelete(cursor, index);
       })
       .catch(() => {});
   }
@@ -225,8 +235,14 @@
     const last = segments.length - 1;
     switch (e.key) {
       case ' ':
-        // Leave space to focused buttons and links.
-        if (e.target instanceof HTMLButtonElement || e.target instanceof HTMLAnchorElement) return;
+        // Leave space to focused buttons, links and the audio controls.
+        if (
+          e.target instanceof HTMLButtonElement ||
+          e.target instanceof HTMLAnchorElement ||
+          e.target instanceof HTMLMediaElement
+        ) {
+          return;
+        }
         if (audio.paused) audio.play().catch(() => {});
         else audio.pause();
         break;
@@ -237,10 +253,10 @@
         if (last >= 0) playLine(Math.min(last, active + 1));
         break;
       case 'e':
-        if (active >= 0) editing = active;
+        if (active >= 0 && !pending) editing = active;
         break;
       case 's':
-        if (active >= 0) nextSpeaker(active);
+        if (active >= 0 && !pending) nextSpeaker(active);
         break;
       default:
         return;
@@ -350,6 +366,7 @@
           playing={!paused}
           bind:editing
           canCycle={speakers.length > 1}
+          busy={pending}
           onplay={playLine}
           onsave={saveText}
           onnextspeaker={nextSpeaker}
