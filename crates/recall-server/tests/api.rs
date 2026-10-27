@@ -663,3 +663,45 @@ async fn people_patch_rejects_name_with_merge() {
     let saved = Speakers::load(&h.config.speakers_path()).unwrap();
     assert_eq!(saved.name_of(&h.alice), "Alice");
 }
+
+#[tokio::test]
+async fn busy_meeting_refuses_edit_delete_and_rerun() {
+    let h = harness().await;
+    h.state
+        .index
+        .lock()
+        .unwrap()
+        .enqueue(&MeetingId(WEEKLY.into()), Step::Segment)
+        .unwrap();
+    let client = reqwest::Client::new();
+    let url = h.url(&format!("/api/meetings/{}", encode(WEEKLY)));
+    let responses = [
+        client
+            .patch(&url)
+            .json(&json!({ "title": "Renamed" }))
+            .send()
+            .await
+            .unwrap(),
+        client.delete(&url).send().await.unwrap(),
+        client
+            .post(format!("{url}/rerun/summarize"))
+            .send()
+            .await
+            .unwrap(),
+    ];
+    for res in responses {
+        assert_eq!(res.status(), 409);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body, json!({ "error": "meeting is being processed" }));
+    }
+    assert!(h.meeting_path(WEEKLY).join("meeting.json").is_file());
+    assert!(h.reruns.lock().unwrap().is_empty());
+
+    // Another meeting is unaffected.
+    let res = client
+        .delete(h.url(&format!("/api/meetings/{}", encode(REVIEW))))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+}
