@@ -7,7 +7,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use recall_llm::Llm;
-use recall_store::{Config, Index, Meeting, MeetingDir, Side, Speakers, Step, StepState};
+use recall_store::speakers::ME;
+use recall_store::{
+    Config, Index, Meeting, MeetingDir, Side, SpeakerId, Speakers, Step, StepState,
+};
 use tempfile::NamedTempFile;
 
 use crate::decode::decode_stereo;
@@ -202,9 +205,14 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Clusters the remote voices. A meeting with no remote speech has none.
+    /// Clusters the remote voices and gives microphone lines the speaker
+    /// `me`. A meeting with no remote speech has no clusters, and the
+    /// diarizer is not run.
     fn diarize(&mut self) -> Result<()> {
         if !self.meeting.segments.iter().any(|s| s.side == Side::Them) {
+            for segment in &mut self.meeting.segments {
+                segment.speaker = Some(SpeakerId(ME.into()));
+            }
             self.meeting.clusters.clear();
             return Ok(());
         }
@@ -215,6 +223,9 @@ impl Run<'_> {
         Ok(())
     }
 
+    /// Names the clusters after known voices and registers new ones. Rerun
+    /// on its own, this only relabels clusters: segments whose speaker was
+    /// already resolved keep it, including any edit made since.
     fn name(&mut self) -> Result<()> {
         name_clusters(&mut self.meeting.clusters, self.speakers, NAME_THRESHOLD);
         apply_names(

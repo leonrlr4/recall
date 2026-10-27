@@ -12,8 +12,9 @@ use chrono::{Local, Utc};
 use recall_llm::Llm;
 use recall_pipeline::runner::{Engines, run_from};
 use recall_pipeline::{Diarizer, Region, Transcriber, Turn, Utterance, Vad};
+use recall_store::speakers::ME;
 use recall_store::{
-    Config, Index, ListFilter, Meeting, MeetingDir, Side, Speakers, Step, StepState,
+    Config, Index, ListFilter, Meeting, MeetingDir, Side, SpeakerId, Speakers, Step, StepState,
 };
 use tempfile::TempDir;
 use tokio::sync::mpsc;
@@ -136,6 +137,14 @@ struct Fixture {
 /// A meeting with a 2 s stereo `audio.opus`: a tone on the microphone (left)
 /// for the first second and on the system audio (right) for the second.
 fn fixture() -> Fixture {
+    fixture_with(
+        "aevalsrc=if(lt(t\\,1)\\,0.5*sin(2*PI*440*t)\\,0)\
+         |if(gte(t\\,1)\\,0.5*sin(2*PI*440*t)\\,0):s=48000:d=2",
+    )
+}
+
+/// Like [`fixture`], with the audio from the ffmpeg `lavfi` source `source`.
+fn fixture_with(source: &str) -> Fixture {
     let tmp = TempDir::new().unwrap();
     let config = Config {
         meetings_dir: tmp.path().join("meetings"),
@@ -143,7 +152,7 @@ fn fixture() -> Fixture {
         ..Config::default()
     };
     let dir = MeetingDir::create(&config.meetings_dir, Local::now(), "Runner test").unwrap();
-    write_audio(&dir.audio());
+    write_audio(&dir.audio(), source);
     let meeting = Meeting {
         id: dir.id.clone(),
         title: "Runner test".into(),
@@ -164,13 +173,10 @@ fn fixture() -> Fixture {
     }
 }
 
-fn write_audio(path: &Path) {
+fn write_audio(path: &Path, source: &str) {
     let status = Command::new("ffmpeg")
         .args(["-v", "error", "-f", "lavfi", "-i"])
-        .arg(
-            "aevalsrc=if(lt(t\\,1)\\,0.5*sin(2*PI*440*t)\\,0)\
-             |if(gte(t\\,1)\\,0.5*sin(2*PI*440*t)\\,0):s=48000:d=2",
-        )
+        .arg(source)
         .args(["-c:a", "libopus", "-b:a", "64k"])
         .arg(path)
         .status()
@@ -328,6 +334,41 @@ async fn failed_step_is_recorded_and_later_steps_stay_pending() {
     }
     assert_eq!(meeting.steps[&Step::Write], StepState::Pending);
     assert!(!f.dir.markdown().exists());
+}
+
+#[tokio::test]
+async fn mic_only_meeting_gives_every_line_to_me() {
+    // A tone on the microphone only; the system audio is silent.
+    let f = fixture_with("aevalsrc=0.5*sin(2*PI*440*t)|0:s=48000:d=2");
+    let calls = Calls::default();
+    let mut engines = engines(&calls, false);
+    let mut speakers = Speakers::default();
+
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut speakers,
+        Step::Segment,
+        |_, _| {},
+    )
+    .await
+    .unwrap();
+
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    assert!(!meeting.segments.is_empty());
+    for segment in &meeting.segments {
+        assert_eq!(segment.side, Side::Me);
+        assert_eq!(segment.speaker, Some(SpeakerId(ME.into())));
+    }
+    assert!(meeting.clusters.is_empty());
+    assert_eq!(calls.diarize.load(Ordering::SeqCst), 0);
+    assert_eq!(meeting.participants(), [SpeakerId(ME.into())]);
+    let rows = Index::open(&f.config.index_path())
+        .unwrap()
+        .list(&ListFilter::default())
+        .unwrap();
+    assert_eq!(rows[0].participants, [speakers.me().name.clone()]);
 }
 
 /// The queue worker runs pipelines on a spawned task, which needs a `Send`
