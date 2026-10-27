@@ -58,7 +58,7 @@ One directory per meeting, by default under `~/Meetings/`, named by start time
 and title:
 
 ```
-~/Meetings/2026-10-27 14:30 Biobuild weekly/
+~/Meetings/2026-10-27 14:30 Weekly sync/
 ├── meeting.md      summary and transcript; Obsidian reads it directly
 ├── audio.opus      stereo 48 kHz, left = microphone (me), right = system output (them)
 ├── screen.mp4      only when screen recording was on

@@ -227,11 +227,11 @@ mod tests {
     #[test]
     fn create_names_dir_by_time_and_title() {
         let root = tempfile::tempdir().unwrap();
-        let dir = MeetingDir::create(root.path(), at(14, 30), "Biobuild weekly").unwrap();
-        assert_eq!(dir.id.0, "2026-10-27 14:30 Biobuild weekly");
+        let dir = MeetingDir::create(root.path(), at(14, 30), "Weekly sync").unwrap();
+        assert_eq!(dir.id.0, "2026-10-27 14:30 Weekly sync");
         assert_eq!(
             dir.path(),
-            root.path().join("2026-10-27 14:30 Biobuild weekly")
+            root.path().join("2026-10-27 14:30 Weekly sync")
         );
         assert!(dir.path().is_dir());
         assert_eq!(dir.audio(), dir.path().join("audio.opus"));
@@ -384,8 +384,8 @@ mod tests {
         let dir = MeetingDir::create(root.path(), at(14, 30), "Untitled").unwrap();
         fs::write(dir.audio(), b"opus").unwrap();
         let old = dir.path();
-        let renamed = dir.rename("Biobuild / weekly").unwrap();
-        assert_eq!(renamed.id.0, "2026-10-27 14:30 Biobuild weekly");
+        let renamed = dir.rename("Weekly / sync").unwrap();
+        assert_eq!(renamed.id.0, "2026-10-27 14:30 Weekly sync");
         assert!(!old.exists());
         assert_eq!(fs::read(renamed.audio()).unwrap(), b"opus");
     }

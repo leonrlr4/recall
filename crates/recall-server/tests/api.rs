@@ -126,7 +126,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
     let index = Index::open(&config.index_path()).unwrap();
 
     let meetings = [
-        (9, "Biobuild weekly", "We ship the release on Friday."),
+        (9, "Weekly sync", "We ship the release on Friday."),
         (11, "Design review", "The new layout looks good."),
     ];
     for (hour, title, text) in meetings {
@@ -186,7 +186,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
     }
 }
 
-const WEEKLY: &str = "2026-10-27 09:00 Biobuild weekly";
+const WEEKLY: &str = "2026-10-27 09:00 Weekly sync";
 const REVIEW: &str = "2026-10-27 11:00 Design review";
 
 #[tokio::test]
@@ -240,7 +240,7 @@ async fn get_meeting_returns_names_and_markdown() {
         .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["meeting"]["title"], "Biobuild weekly");
+    assert_eq!(body["meeting"]["title"], "Weekly sync");
     assert_eq!(body["names"][&h.alice.0], "Alice");
     assert_eq!(body["names"]["me"], "Me");
     assert!(body["markdown"].as_str().unwrap().contains("**Alice**"));

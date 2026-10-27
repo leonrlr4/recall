@@ -110,7 +110,7 @@ Task order and parallelism: Tasks 1 to 3 (store, config) first. Then Tasks 4 to 
 **Interfaces:**
 - Produces:
   ```rust
-  pub struct MeetingId(pub String);              // dir name, e.g. "2026-10-27 14:30 Biobuild weekly"
+  pub struct MeetingId(pub String);              // dir name, e.g. "2026-10-27 14:30 Weekly sync"
   pub enum Step { Segment, Transcribe, Diarize, Name, Summarize, Write }
   pub enum StepState { Pending, Running, Done { at: DateTime<Utc> }, Failed { at: DateTime<Utc>, error: String } }
   pub enum Side { Me, Them }
@@ -156,7 +156,7 @@ Task order and parallelism: Tasks 1 to 3 (store, config) first. Then Tasks 4 to 
   pub fn sanitize_title(title: &str) -> String;   // strips `/`, `\0`, trims, collapses whitespace, max 80 chars, empty → "Meeting"
   ```
 
-- [ ] **Step 1: Tests** `create_names_dir_by_time_and_title` (`2026-10-27 14:30 Biobuild weekly`), `create_sanitizes_slash_and_empty` (`a/b` → `a b`; `""` → `Meeting`), `create_suffixes_on_collision` (second call → `... (2)`), `list_is_newest_first_and_skips_dirs_without_json`, `rename_keeps_time_prefix`.
+- [ ] **Step 1: Tests** `create_names_dir_by_time_and_title` (`2026-10-27 14:30 Weekly sync`), `create_sanitizes_slash_and_empty` (`a/b` → `a b`; `""` → `Meeting`), `create_suffixes_on_collision` (second call → `... (2)`), `list_is_newest_first_and_skips_dirs_without_json`, `rename_keeps_time_prefix`.
 - [ ] **Step 2: Run** → FAIL.
 - [ ] **Step 3: Implement** `dir.rs`.
 - [ ] **Step 4: Run** → PASS.

@@ -16,8 +16,8 @@ describe('api', () => {
   });
 
   it('meeting_ids_are_path_encoded', () => {
-    expect(meetingUrl('2026-10-27 14:30 Biobuild weekly')).toBe(
-      '/api/meetings/2026-10-27%2014%3A30%20Biobuild%20weekly',
+    expect(meetingUrl('2026-10-27 14:30 Weekly sync')).toBe(
+      '/api/meetings/2026-10-27%2014%3A30%20Weekly%20sync',
     );
     expect(audioUrl('a/b')).toBe('/api/meetings/a%2Fb/audio');
   });

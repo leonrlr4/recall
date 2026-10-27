@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 const FILE: &str = "meeting.json";
 const TMP_FILE: &str = "meeting.json.tmp";
 
-/// Meeting directory name, e.g. `"2026-10-27 14:30 Biobuild weekly"`.
+/// Meeting directory name, e.g. `"2026-10-27 14:30 Weekly sync"`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MeetingId(pub String);
@@ -170,8 +170,8 @@ mod tests {
         let mut models = BTreeMap::new();
         models.insert("asr".to_string(), "whisper-large-v3".to_string());
         Meeting {
-            id: MeetingId("2026-10-27 14:30 Biobuild weekly".into()),
-            title: "Biobuild weekly".into(),
+            id: MeetingId("2026-10-27 14:30 Weekly sync".into()),
+            title: "Weekly sync".into(),
             started: at,
             duration_ms: 1_800_000,
             source_app: Some("Google Meet".into()),
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn json_uses_snake_case_and_string_step_keys() {
         let value = serde_json::to_value(sample()).unwrap();
-        assert_eq!(value["id"], "2026-10-27 14:30 Biobuild weekly");
+        assert_eq!(value["id"], "2026-10-27 14:30 Weekly sync");
         assert_eq!(value["segments"][0]["side"], "me");
         assert_eq!(value["segments"][1]["speaker"], "3f1c");
         assert!(value["steps"]["transcribe"]["done"]["at"].is_string());
