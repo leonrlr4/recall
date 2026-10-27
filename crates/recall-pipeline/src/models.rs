@@ -29,7 +29,9 @@ pub struct ModelSpec {
     /// Size of the download at `url` (for pyannote, the tarball), used for
     /// progress when the server sends no length.
     pub bytes: u64,
-    /// Hex SHA-256 of the download at `url`, checked when set.
+    /// Hex SHA-256 of the download at `url` (for pyannote, the tarball),
+    /// checked when set; every real model sets it. A download that does not
+    /// match is deleted.
     pub sha256: Option<&'static str>,
 }
 
@@ -37,33 +39,43 @@ pub struct ModelSpec {
 /// variant, scripts and a licence.
 const PYANNOTE_MEMBER: &str = "model.onnx";
 
-/// Where `id` comes from and where it is stored.
+/// Temporary download files older than this are left over from a killed
+/// process and deleted by [`ensure`]. A live download rewrites its file
+/// every few milliseconds, so its modification time stays recent.
+const STALE_PART_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// Where `id` comes from and where it is stored. Hugging Face URLs name a
+/// commit rather than `main`, so the file cannot change under the pinned
+/// hash; the GitHub release assets have fixed names, and the hash catches a
+/// replaced one.
 pub fn spec(id: ModelId) -> ModelSpec {
     match id {
-        // Breeze ASR 25, whisper.cpp q8_0 quantisation.
+        // Breeze ASR 25, whisper.cpp q8_0 quantisation, at the repository's
+        // commit of 2026-05-12.
         ModelId::BreezeGgml => ModelSpec {
             id,
             file: "ggml-breeze-asr-25-q8_0.bin",
-            url: "https://huggingface.co/shdennlin/breeze-asr-25-ggml/resolve/main/ggml-breeze-asr-25-q8_0.bin",
+            url: "https://huggingface.co/shdennlin/breeze-asr-25-ggml/resolve/36c726093efe1760d1dd39c3cfe8b6a7282437d1/ggml-breeze-asr-25-q8_0.bin",
             bytes: 1_656_129_691,
-            sha256: None,
+            sha256: Some("d4b187c40ffbf1f620734b77821e2ca8a97c8ecf5754d02b2a175069348cafcf"),
         },
         ModelId::SileroVad => ModelSpec {
             id,
             file: "silero_vad.onnx",
             url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
             bytes: 643_854,
-            sha256: None,
+            sha256: Some("9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"),
         },
         // `sherpa-onnx-pyannote-segmentation-3-0.tar.bz2` holds
-        // `sherpa-onnx-pyannote-segmentation-3-0/model.onnx` (5 992 913 bytes),
-        // which is extracted to `file`.
+        // `sherpa-onnx-pyannote-segmentation-3-0/model.onnx` (5 992 913 bytes,
+        // SHA-256 220ad67c...), which is extracted to `file`. The hash below
+        // is the tarball's, checked before extracting.
         ModelId::PyannoteSeg => ModelSpec {
             id,
             file: "pyannote-segmentation-3-0/model.onnx",
             url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
             bytes: 6_958_444,
-            sha256: None,
+            sha256: Some("24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"),
         },
         // The release tag really is spelled "recongition".
         ModelId::CamPlusPlus => ModelSpec {
@@ -71,7 +83,7 @@ pub fn spec(id: ModelId) -> ModelSpec {
             file: "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
             url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
             bytes: 28_281_164,
-            sha256: None,
+            sha256: Some("aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2"),
         },
     }
 }
@@ -97,10 +109,12 @@ pub fn path(models_dir: &Path, id: ModelId) -> PathBuf {
 /// beside the model and is renamed into place only once complete, so an
 /// interrupted download never leaves a file that looks finished, a failed
 /// one deletes its temporary file, and concurrent callers each write their
-/// own copy (the last rename wins, and every copy is whole). For pyannote the
+/// own copy (the last rename wins, and every copy is whole). A download whose
+/// SHA-256 differs from the spec's is deleted and fails. For pyannote the
 /// tarball is the temporary download and `model.onnx` is extracted from it
-/// into a second temporary file. `progress` receives `(downloaded, total)`
-/// bytes after each chunk.
+/// into a second temporary file. Temporary files over an hour old, which a
+/// killed process leaves behind, are deleted first. `progress` receives
+/// `(downloaded, total)` bytes after each chunk.
 pub async fn ensure(
     models_dir: &Path,
     id: ModelId,
@@ -116,10 +130,11 @@ async fn ensure_spec(
     progress: impl Fn(u64, u64),
 ) -> Result<PathBuf> {
     let dest = models_dir.join(spec.file);
+    let parent = dest.parent().unwrap_or(models_dir).to_owned();
+    sweep_stale_parts(&parent, STALE_PART_AGE);
     if dest.is_file() {
         return Ok(dest);
     }
-    let parent = dest.parent().unwrap_or(models_dir).to_owned();
     tokio::fs::create_dir_all(&parent)
         .await
         .with_context(|| format!("creating {}", parent.display()))?;
@@ -140,6 +155,31 @@ async fn ensure_spec(
         .persist(&dest)
         .with_context(|| format!("moving download to {}", dest.display()))?;
     Ok(dest)
+}
+
+/// Deletes the `.<file>.*.part` temporary files in `dir` last modified more
+/// than `age` ago. Errors are logged by being ignored: a leftover file only
+/// costs disk space.
+fn sweep_stale_parts(dir: &Path, age: Duration) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with('.') && name.ends_with(".part")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|elapsed| elapsed > age);
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// A temporary file in `dir` named after `file`, deleted on drop unless
@@ -270,7 +310,9 @@ mod tests {
             let s = spec(id);
             assert_eq!(s.id, id);
             assert!(s.url.starts_with("https://"), "{}", s.url);
+            assert!(!s.url.contains("/resolve/main/"), "{}", s.url);
             assert!(s.bytes > 0);
+            assert_eq!(s.sha256.map(str::len), Some(64), "{id:?}");
         }
     }
 
@@ -409,6 +451,61 @@ mod tests {
             "{:?}",
             dir_names(dir.path())
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_rejects_a_body_with_the_wrong_hash() {
+        let body = body_1mb();
+        let spec = ModelSpec {
+            sha256: Some("0000000000000000000000000000000000000000000000000000000000000000"),
+            ..test_spec(serve(body.clone(), body.len()).await)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let err = ensure_spec(dir.path(), &spec, |_, _| {}).await.unwrap_err();
+        assert!(format!("{err:#}").contains("SHA-256"), "{err:#}");
+        assert!(
+            dir_names(dir.path()).is_empty(),
+            "{:?}",
+            dir_names(dir.path())
+        );
+
+        let good = ModelSpec {
+            sha256: Some(Box::leak(
+                format!("{:x}", Sha256::digest(&body)).into_boxed_str(),
+            )),
+            ..spec
+        };
+        ensure_spec(dir.path(), &good, |_, _| {}).await.unwrap();
+        assert_eq!(dir_names(dir.path()), ["model.onnx"]);
+    }
+
+    #[tokio::test]
+    async fn ensure_sweeps_stale_partial_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("model.onnx"), b"model").unwrap();
+        let old = dir.path().join(".model.onnx.abc123.part");
+        let fresh = dir.path().join(".model.onnx.def456.part");
+        let other = dir.path().join("notes.part");
+        for p in [&old, &fresh, &other] {
+            std::fs::write(p, b"partial").unwrap();
+        }
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 3600))
+            .unwrap();
+
+        ensure_spec(
+            dir.path(),
+            &test_spec("http://127.0.0.1:1/unused"),
+            |_, _| panic!("no download expected"),
+        )
+        .await
+        .unwrap();
+        assert!(!old.exists());
+        assert!(fresh.exists(), "a download in progress is left alone");
+        assert!(other.exists());
     }
 
     #[test]
