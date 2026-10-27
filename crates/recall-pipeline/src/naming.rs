@@ -122,15 +122,16 @@ fn nearest_turn(segment: &Segment, turns: &[Turn]) -> Option<usize> {
 
 /// Sets each cluster's speaker to the known person whose voice is most like
 /// its embedding, when the cosine similarity reaches `threshold`. Clusters
-/// with no such person, or with an empty embedding, are left as they are. A remote voice never matches
-/// `me`.
+/// with no such person, or with an empty embedding, are left as they are. A
+/// remote voice never matches `me` or a person nobody has named (see
+/// [`recall_store::Person::named`]).
 pub fn name_clusters(clusters: &mut [Cluster], speakers: &Speakers, threshold: f32) {
     for cluster in clusters.iter_mut().filter(|c| !c.embedding.is_empty()) {
         let embedding = &cluster.embedding;
         let best = speakers
             .people()
             .iter()
-            .filter(|p| p.id.0 != ME)
+            .filter(|p| p.named && p.id.0 != ME)
             .flat_map(|p| p.embeddings.iter().map(move |e| (p, cosine(embedding, e))))
             .filter(|(_, score)| *score >= threshold)
             .max_by(|a, b| a.1.total_cmp(&b.1));
@@ -140,13 +141,14 @@ pub fn name_clusters(clusters: &mut [Cluster], speakers: &Speakers, threshold: f
     }
 }
 
-/// Registers every cluster still without a speaker as a new person named by
-/// its label and carrying its embedding, so it can be renamed later, then
+/// Registers every cluster still without a speaker as a new unnamed person
+/// labelled by the cluster and carrying its embedding, so it can be named
+/// later, then
 /// replaces the `cluster:{i}` ids on `segments` with the clusters' speakers.
 pub fn apply_names(segments: &mut [Segment], clusters: &mut [Cluster], speakers: &mut Speakers) {
     for cluster in clusters.iter_mut().filter(|c| c.speaker.is_none()) {
         let embedding = Some(cluster.embedding.clone()).filter(|e| !e.is_empty());
-        cluster.speaker = Some(speakers.add(&cluster.label, embedding));
+        cluster.speaker = Some(speakers.add_unnamed(&cluster.label, embedding));
     }
     for segment in segments {
         let Some(i) = segment
@@ -274,6 +276,20 @@ mod tests {
     }
 
     #[test]
+    fn name_clusters_skips_unnamed_voices_until_they_are_named() {
+        let mut speakers = Speakers::default();
+        let stranger = speakers.add_unnamed("Remote 1", Some(vec![1.0, 0.0]));
+        let mut clusters = [cluster("Remote 1", vec![1.0, 0.0])];
+
+        name_clusters(&mut clusters, &speakers, 0.6);
+        assert_eq!(clusters[0].speaker, None);
+
+        speakers.rename(&stranger, "Ann").unwrap();
+        name_clusters(&mut clusters, &speakers, 0.6);
+        assert_eq!(clusters[0].speaker, Some(stranger));
+    }
+
+    #[test]
     fn apply_names_resolves_cluster_refs_and_registers_unknown_voices() {
         let mut speakers = Speakers::default();
         let tom = speakers.add("Tom", Some(vec![1.0, 0.0]));
@@ -308,6 +324,7 @@ mod tests {
             .expect("unknown voice registered");
         let person = speakers.get(&new).unwrap();
         assert_eq!(person.name, "Remote 2");
+        assert!(!person.named);
         assert_eq!(person.embeddings, [vec![0.0, 1.0]]);
         assert_eq!(clusters[0].speaker, Some(tom.clone()));
         let ids: Vec<_> = segments.iter().map(|s| s.speaker.clone()).collect();

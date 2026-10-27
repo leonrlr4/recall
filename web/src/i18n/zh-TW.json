@@ -145,6 +145,7 @@
     "rename": "點一下改名",
     "name_label": "{name} 的新名稱",
     "edit_hint": "點名稱可以改名。Enter 儲存，Esc 取消。",
+    "show_unnamed": "顯示未命名的聲音（{n}）",
     "you": "你",
     "me_no_merge": "你自己的項目不能合併",
     "merge_into": "合併到…",

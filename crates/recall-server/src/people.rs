@@ -17,6 +17,8 @@ pub struct PersonDto {
     id: SpeakerId,
     name: String,
     aliases: Vec<String>,
+    /// False for a voice recall registered that nobody has named yet.
+    named: bool,
     /// Stored voice embeddings.
     samples: usize,
     /// Meetings in which the person speaks.
@@ -28,6 +30,7 @@ fn dto(person: &Person, counts: &HashMap<SpeakerId, usize>) -> PersonDto {
         id: person.id.clone(),
         name: person.name.clone(),
         aliases: person.aliases.clone(),
+        named: person.named,
         samples: person.embeddings.len(),
         meetings: counts.get(&person.id).copied().unwrap_or(0),
     }

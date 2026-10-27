@@ -396,6 +396,47 @@ async fn people_rename_applies_to_meeting_markdown() {
 }
 
 #[tokio::test]
+async fn people_lists_unnamed_voices_and_renaming_names_them() {
+    let h = harness().await;
+    let stranger = {
+        let mut speakers = h.state.speakers.lock().unwrap();
+        let id = speakers.add_unnamed("Remote 1", Some(vec![0.0, 1.0]));
+        speakers.save(&h.config.speakers_path()).unwrap();
+        id
+    };
+    let people: Value = reqwest::get(h.url("/api/people"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let named = |id: &SpeakerId| {
+        people
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id.0.as_str())
+            .unwrap()["named"]
+            .clone()
+    };
+    assert_eq!(named(&h.alice), true);
+    assert_eq!(named(&stranger), false);
+
+    let renamed: Value = reqwest::Client::new()
+        .patch(h.url(&format!("/api/people/{}", stranger.0)))
+        .json(&json!({ "name": "Bob" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(renamed["named"], true);
+    let saved = Speakers::load(&h.config.speakers_path()).unwrap();
+    assert!(saved.get(&stranger).unwrap().named);
+}
+
+#[tokio::test]
 async fn people_merge_moves_segments_to_kept_person() {
     let h = harness().await;
     let bob = {

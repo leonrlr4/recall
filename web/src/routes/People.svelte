@@ -3,9 +3,13 @@
   import PersonRow from '../components/PersonRow.svelte';
   import { patchPerson, people } from '../lib/api';
   import { t } from '../lib/i18n';
+  import { unnamedCount, visiblePeople } from '../lib/people';
   import type { Person } from '../lib/types';
 
-  let list = $state<Person[] | null>(null);
+  let all = $state<Person[] | null>(null);
+  let showUnnamed = $state(false);
+  const list = $derived(all ? visiblePeople(all, showUnnamed) : null);
+  const unnamed = $derived(all ? unnamedCount(all) : 0);
   let loadError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
   let busy = $state(false);
@@ -13,11 +17,7 @@
 
   async function load() {
     try {
-      const all = await people();
-      // `me` first, then by name.
-      list = all.sort((a, b) =>
-        a.id === 'me' ? -1 : b.id === 'me' ? 1 : a.name.localeCompare(b.name),
-      );
+      all = await people();
       loadError = null;
     } catch (e) {
       loadError = e instanceof Error ? e.message : String(e);
@@ -51,7 +51,7 @@
       .finally(() => heading?.focus());
   }
 
-  const onlyMe = $derived(list !== null && list.every((p) => p.id === 'me'));
+  const onlyMe = $derived(all !== null && all.every((p) => p.id === 'me'));
 </script>
 
 <div class="page">
@@ -92,6 +92,12 @@
       </table>
     </div>
     <p class="muted hint" id="people-edit-hint">{t('people.edit_hint')}</p>
+    {#if unnamed > 0}
+      <label class="toggle">
+        <input type="checkbox" bind:checked={showUnnamed} />
+        {t('people.show_unnamed', { n: unnamed })}
+      </label>
+    {/if}
     {#if onlyMe}
       <div class="empty">
         <p class="empty-title">{t('people.empty_title')}</p>
@@ -125,6 +131,23 @@
 
   .table-wrap {
     overflow-x: auto;
+  }
+
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    color: var(--text-2);
+    font-size: 14px;
+    cursor: pointer;
+  }
+
+  .toggle input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--accent);
   }
 
   table {

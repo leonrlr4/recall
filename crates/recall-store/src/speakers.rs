@@ -26,6 +26,17 @@ pub struct Person {
     /// Voice embeddings, oldest first.
     #[serde(default)]
     pub embeddings: Vec<Vec<f32>>,
+    /// False for a voice recall registered by itself and nobody has named
+    /// yet. Such a person keeps its voice for naming later but is never
+    /// matched against new meetings, so one stranger's label does not stick
+    /// to every voice like theirs. People saved before this field existed
+    /// count as named.
+    #[serde(default = "named_default")]
+    pub named: bool,
+}
+
+fn named_default() -> bool {
+    true
 }
 
 impl Person {
@@ -35,6 +46,7 @@ impl Person {
             name: name.to_string(),
             aliases: Vec::new(),
             embeddings: Vec::new(),
+            named: true,
         }
     }
 }
@@ -110,12 +122,21 @@ impl Speakers {
             .map_or_else(|| id.0.clone(), |p| p.name.clone())
     }
 
-    /// Adds a new person with a fresh uuid id.
+    /// Adds a new named person with a fresh uuid id.
     pub fn add(&mut self, name: &str, embedding: Option<Vec<f32>>) -> SpeakerId {
         let id = SpeakerId(uuid::Uuid::new_v4().to_string());
         let mut person = Person::new(id.clone(), name);
         person.embeddings.extend(embedding);
         self.people.push(person);
+        id
+    }
+
+    /// Like [`Speakers::add`], for a voice nobody has named: `label` is a
+    /// placeholder such as "Remote 1", and the person is left out of
+    /// [`Speakers::best_match`] until renamed.
+    pub fn add_unnamed(&mut self, label: &str, embedding: Option<Vec<f32>>) -> SpeakerId {
+        let id = self.add(label, embedding);
+        self.get_mut(&id).expect("just added").named = false;
         id
     }
 
@@ -136,6 +157,7 @@ impl Speakers {
             bail!("no speaker with id {:?}", id.0);
         };
         person.name = name.to_string();
+        person.named = true;
         Ok(())
     }
 
@@ -176,11 +198,12 @@ impl Speakers {
         Ok(())
     }
 
-    /// The person whose closest embedding is most similar to `e`, if that
-    /// similarity is at least `threshold`.
+    /// The named person whose closest embedding is most similar to `e`, if
+    /// that similarity is at least `threshold`. Unnamed people never match.
     pub fn best_match(&self, e: &[f32], threshold: f32) -> Option<(SpeakerId, f32)> {
         self.people
             .iter()
+            .filter(|p| p.named)
             .flat_map(|p| p.embeddings.iter().map(move |x| (p, cosine(e, x))))
             .filter(|(_, score)| *score >= threshold)
             .max_by(|a, b| a.1.total_cmp(&b.1))
@@ -305,6 +328,37 @@ mod tests {
         assert_eq!(got, first);
         assert!(score > 0.99 && score < 1.0);
         assert!(speakers.best_match(&[0.9, 0.1], 0.995).is_none());
+    }
+
+    #[test]
+    fn unnamed_people_do_not_match_until_renamed() {
+        let mut speakers = Speakers::default();
+        let stranger = speakers.add_unnamed("Remote 1", Some(vec![1.0, 0.0]));
+        assert!(!speakers.get(&stranger).unwrap().named);
+        assert!(speakers.best_match(&[1.0, 0.0], 0.6).is_none());
+
+        speakers.rename(&stranger, "Ann").unwrap();
+        assert!(speakers.get(&stranger).unwrap().named);
+        assert_eq!(speakers.best_match(&[1.0, 0.0], 0.6).unwrap().0, stranger);
+    }
+
+    #[test]
+    fn people_saved_without_named_load_as_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("speakers.json");
+        std::fs::write(
+            &path,
+            r#"{"people":[{"id":"x","name":"Tom","embeddings":[[1.0,0.0]]}]}"#,
+        )
+        .unwrap();
+        let speakers = Speakers::load(&path).unwrap();
+        assert!(speakers.get(&id("x")).unwrap().named);
+        assert_eq!(speakers.best_match(&[1.0, 0.0], 0.6).unwrap().0, id("x"));
+
+        let mut speakers = speakers;
+        let stranger = speakers.add_unnamed("Remote 1", None);
+        speakers.save(&path).unwrap();
+        assert!(!Speakers::load(&path).unwrap().get(&stranger).unwrap().named);
     }
 
     #[test]

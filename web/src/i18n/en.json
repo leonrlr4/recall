@@ -145,6 +145,7 @@
     "rename": "Click to rename",
     "name_label": "New name for {name}",
     "edit_hint": "Click a name to rename it. Enter saves, Esc cancels.",
+    "show_unnamed": "Show unnamed voices ({n})",
     "you": "You",
     "me_no_merge": "Your own entry cannot be merged",
     "merge_into": "Merge into…",

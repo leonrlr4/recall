@@ -86,6 +86,8 @@ export interface Hit {
 export interface Person {
   id: string;
   name: string;
+  /** False for a voice recall registered that nobody has named yet. */
+  named: boolean;
   aliases: string[];
   samples: number;
   meetings: number;
