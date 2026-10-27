@@ -411,6 +411,26 @@ fn engine_load_failure_marks_the_first_step_failed() {
 }
 
 #[test]
+fn engine_load_panic_fails_the_job_and_the_worker_goes_on() {
+    let f = fixture();
+    let mut worker = worker_with(&f, || panic!("onnxruntime rejected the model"));
+
+    assert!(worker.run_next(&runtime(), &mut None).unwrap());
+
+    assert_eq!(state(&f), "failed:segment");
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    match &meeting.steps[&Step::Segment] {
+        StepState::Failed { error, .. } => {
+            assert!(error.contains("onnxruntime rejected the model"), "{error}")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.index.lock().unwrap().active_job(&f.dir.id).unwrap(), None);
+    // The queue is empty now, and the worker still answers.
+    assert!(!worker.run_next(&runtime(), &mut None).unwrap());
+}
+
+#[test]
 fn rename_during_a_run_survives_the_speakers_merge() {
     let f = fixture();
     let shared = f.speakers.clone();

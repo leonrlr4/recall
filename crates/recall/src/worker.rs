@@ -176,7 +176,16 @@ impl Worker {
         }
         if engines.is_none() {
             tracing::info!("loading the models");
-            match runtime.block_on((self.load)(&self.config)) {
+            // A panic in a model loader (a native library rejecting a
+            // file) would otherwise end the worker thread with no job
+            // failed and nothing processed after it.
+            let loaded = panic::catch_unwind(AssertUnwindSafe(|| {
+                runtime.block_on((self.load)(&self.config))
+            }))
+            .unwrap_or_else(|payload| {
+                Err(anyhow!("loading panicked: {}", panic_message(&*payload)))
+            });
+            match loaded {
                 Ok(loaded) => *engines = Some(loaded),
                 Err(err) => {
                     let err = err.context("loading the models");
