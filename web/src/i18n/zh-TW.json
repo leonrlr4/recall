@@ -19,7 +19,10 @@
     "discard_confirm": "要捨棄這段錄音嗎？",
     "discard_yes": "捨棄",
     "failed": "無法變更錄音：{error}",
-    "label": "錄音狀態"
+    "label": "錄音狀態",
+    "live_recording": "正在錄製 {app}",
+    "live_recording_any": "錄音中",
+    "live_processing": "處理中 · {step}"
   },
   "common": {
     "loading": "載入中…",

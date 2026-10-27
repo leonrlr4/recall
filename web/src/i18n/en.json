@@ -19,7 +19,10 @@
     "discard_confirm": "Discard this recording?",
     "discard_yes": "Discard",
     "failed": "Could not change the recording: {error}",
-    "label": "Recorder"
+    "label": "Recorder",
+    "live_recording": "Recording {app}",
+    "live_recording_any": "Recording",
+    "live_processing": "Processing · {step}"
   },
   "common": {
     "loading": "Loading…",

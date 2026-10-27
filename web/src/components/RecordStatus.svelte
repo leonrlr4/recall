@@ -1,16 +1,26 @@
 <script lang="ts">
+  import { tick, untrack } from 'svelte';
   import { t } from '../lib/i18n';
   import { live, sendRecord } from '../lib/live.svelte';
-  import { recordActions, statusChipText, type RecordAction } from '../lib/status';
+  import {
+    recordActions,
+    statusAnnouncement,
+    statusChipText,
+    type RecordAction,
+  } from '../lib/status';
 
   let now = $state(Date.now());
   let busy = $state(false);
   let confirming = $state(false);
   let error = $state<string | null>(null);
+  let group: HTMLDivElement;
+  let cancelButton = $state<HTMLButtonElement>();
+  const buttons: Partial<Record<RecordAction, HTMLButtonElement>> = $state({});
 
   const phase = $derived(live.snapshot?.phase ?? 'idle');
   const chip = $derived(statusChipText(live.snapshot, live.progress, now, t));
   const actions = $derived(recordActions(phase));
+  const announcement = $derived(statusAnnouncement(live.snapshot, live.progress, t));
 
   // Tick the elapsed time only while recording.
   $effect(() => {
@@ -20,17 +30,44 @@
     return () => clearInterval(timer);
   });
 
-  // A discard prompt left open must not apply to a later recording.
+  // A discard prompt left open must not apply to a later recording, and an
+  // error from one phase says nothing about the next.
+  let lastPhase = untrack(() => phase);
   $effect(() => {
-    if (phase !== 'recording') confirming = false;
+    if (phase === lastPhase) return;
+    lastPhase = phase;
+    error = null;
+    if (confirming) void closeConfirm();
   });
+
+  $effect(() => {
+    if (confirming) cancelButton?.focus();
+  });
+
+  /** Closes the discard prompt and puts focus back on a record button. */
+  async function closeConfirm() {
+    const hadFocus = group.contains(document.activeElement);
+    confirming = false;
+    await tick();
+    // The prompt's button was removed with it, so focus fell to the body.
+    const lost = hadFocus || document.activeElement === document.body;
+    if (lost) (buttons.discard ?? buttons.stop ?? buttons.start)?.focus();
+  }
+
+  function confirmKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      void closeConfirm();
+    }
+  }
 
   async function run(action: RecordAction) {
     busy = true;
     error = null;
     try {
       await sendRecord(action);
-      confirming = false;
+      if (confirming) await closeConfirm();
     } catch (e) {
       error = t('status.failed', { error: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -45,18 +82,22 @@
   });
 </script>
 
-<div class="status" role="group" aria-label={t('status.label')}>
-  <span class="chip {chip.tone}" aria-live="polite">
+<div class="status" role="group" aria-label={t('status.label')} bind:this={group}>
+  <!-- The visible chip ticks every second; this region holds only the phase. -->
+  <span class="sr-only" aria-live="polite">{announcement}</span>
+  <span class="chip {chip.tone}" aria-hidden="true">
     <span class="dot" aria-hidden="true"></span>
     {chip.text}
   </span>
   {#if confirming}
-    <span class="confirm" role="alert">
+    <!-- Escape from either button cancels; the listener sits on their container. -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <span class="confirm" role="alert" onkeydown={confirmKeydown}>
       {t('status.discard_confirm')}
       <button class="btn danger" disabled={busy} onclick={() => run('discard')}>
         {t('status.discard_yes')}
       </button>
-      <button class="btn" disabled={busy} onclick={() => (confirming = false)}>
+      <button class="btn" disabled={busy} bind:this={cancelButton} onclick={closeConfirm}>
         {t('common.cancel')}
       </button>
     </span>
@@ -66,6 +107,7 @@
         class="btn"
         class:primary={action === 'start'}
         disabled={busy}
+        bind:this={buttons[action]}
         onclick={() => (action === 'discard' ? (confirming = true) : run(action))}
       >
         {label[action]}

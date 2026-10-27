@@ -5,7 +5,8 @@ import type { RecallEvent, Step } from './types';
 
 /**
  * `armed` and `finishing` have no event of their own, so the status is also
- * polled at this interval while the tab is visible. It is a local request.
+ * polled at this interval while the tab is visible, and read again when the
+ * tab becomes visible. It is a local request.
  */
 const POLL_MS = 2000;
 
@@ -22,6 +23,9 @@ export const live = $state<{
 
 /** Counts recorder events, so a status answer older than one is dropped. */
 let recorderEvents = 0;
+/** Numbers status requests; an answer older than the last applied one is dropped. */
+let requestSeq = 0;
+let appliedSeq = 0;
 
 function apply(e: RecallEvent) {
   switch (e.kind) {
@@ -52,9 +56,11 @@ function apply(e: RecallEvent) {
 /** Fetches `/api/status` unless a recorder event lands while it is in flight. */
 export async function refreshStatus(): Promise<void> {
   const seen = recorderEvents;
+  const mine = ++requestSeq;
   try {
     const s = await status();
-    if (recorderEvents !== seen) return;
+    if (recorderEvents !== seen || mine < appliedSeq) return;
+    appliedSeq = mine;
     live.snapshot = { phase: s.phase, since_ms: s.since_ms, source_app: s.source_app };
   } catch {
     // Keep the last known state; the next poll or event corrects it.
@@ -72,12 +78,19 @@ let close: (() => void) | null = null;
 export function connectLive(): void {
   if (close || typeof EventSource === 'undefined') return;
   const closeEvents = events(apply);
-  void refreshStatus();
-  const timer = setInterval(() => {
-    if (!document.hidden) void refreshStatus();
-  }, POLL_MS);
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const visibility = () => {
+    clearInterval(timer);
+    timer = undefined;
+    if (document.hidden) return;
+    void refreshStatus();
+    timer = setInterval(() => void refreshStatus(), POLL_MS);
+  };
+  document.addEventListener('visibilitychange', visibility);
+  visibility();
   close = () => {
     closeEvents();
     clearInterval(timer);
+    document.removeEventListener('visibilitychange', visibility);
   };
 }

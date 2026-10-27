@@ -52,6 +52,31 @@ export function statusChipText(
   return { text: t('status.idle'), tone: 'idle' };
 }
 
+/**
+ * What a screen reader hears: the chip's phase without elapsed time or
+ * percent, so a polite live region speaks only when the phase, app or step
+ * changes, not on every tick.
+ */
+export function statusAnnouncement(
+  snapshot: Snapshot | null,
+  progress: Record<string, { step: Step; pct: number }>,
+  t: T,
+): string {
+  const chip = statusChipText(snapshot, progress, 0, t);
+  switch (chip.tone) {
+    case 'recording': {
+      const app = snapshot?.source_app || null;
+      return app ? t('status.live_recording', { app }) : t('status.live_recording_any');
+    }
+    case 'processing': {
+      const jobs = Object.values(progress);
+      return t('status.live_processing', { step: t(`step.${jobs[jobs.length - 1].step}`) });
+    }
+    default:
+      return chip.text;
+  }
+}
+
 /** Buttons offered next to the chip, in display order. */
 export function recordActions(phase: string): RecordAction[] {
   switch (phase) {

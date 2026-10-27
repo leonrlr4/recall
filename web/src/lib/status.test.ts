@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import en from '../i18n/en.json';
 import { format } from './i18n';
-import { recordActions, statusChipText, type Snapshot } from './status';
+import { recordActions, statusAnnouncement, statusChipText, type Snapshot } from './status';
 
 /** `t` over the English strings, so the expectations read as the UI does. */
 function t(key: string, params?: Record<string, string | number>): string {
@@ -72,5 +72,21 @@ describe('status', () => {
     expect(recordActions('armed')).toEqual(['start']);
     expect(recordActions('recording')).toEqual(['stop', 'discard']);
     expect(recordActions('finishing')).toEqual([]);
+  });
+
+  it('status_announcement_leaves_out_changing_numbers', () => {
+    const progress = { m1: { step: 'transcribe' as const, pct: 0.42 } };
+    expect(statusAnnouncement(snap('idle', null), {}, t)).toBe('Idle');
+    expect(statusAnnouncement(snap('armed'), {}, t)).toBe('Detected zoom, starting…');
+    expect(statusAnnouncement(snap('recording', 'zoom', NOW - 125_000), progress, t)).toBe(
+      'Recording zoom',
+    );
+    expect(statusAnnouncement(snap('recording', null), {}, t)).toBe('Recording');
+    expect(statusAnnouncement(snap('finishing'), {}, t)).toBe('Finishing…');
+    expect(statusAnnouncement(snap('idle', null), progress, t)).toBe('Processing · Transcribing');
+    // The same phase gives the same string, so a live region stays quiet.
+    expect(statusAnnouncement(snap('recording', 'zoom', NOW - 1_000), {}, t)).toBe(
+      statusAnnouncement(snap('recording', 'zoom', NOW - 9_000), {}, t),
+    );
   });
 });
