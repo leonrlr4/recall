@@ -17,3 +17,8 @@ sha2 = "0.10"
 bzip2 = "0.5"
 tar = "0.4"
 tempfile.workspace = true
+whisper-rs = "0.16"
+opencc = "0.3"
+
+[features]
+vulkan = ["whisper-rs/vulkan"]
