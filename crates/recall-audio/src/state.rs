@@ -35,7 +35,9 @@ pub enum Phase {
     },
     /// `since` is when capture began, including the armed period. `users` are
     /// the allowlisted streams still open. `closed_at` is when the last of them
-    /// closed; the recording finishes once it is `grace` old.
+    /// closed, taken from the last tick; the recording finishes once it is
+    /// `grace` old. A hotkey-started recording also finishes this way when an
+    /// allowlisted app it tracks closes the mic and the grace passes.
     Recording {
         since: Instant,
         users: Vec<MicUser>,
@@ -62,15 +64,16 @@ pub enum Action {
 /// `source_app` of a recording started by hotkey with no allowlisted app open.
 const HOTKEY_SOURCE: &str = "hotkey";
 
+#[derive(Debug)]
 pub struct Session {
     phase: Phase,
     allowlist: Vec<String>,
     debounce: Duration,
     grace: Duration,
-    /// Allowlisted streams open while armed.
+    /// Allowlisted streams open while armed, or seen before the first tick.
     pending: Vec<MicUser>,
-    /// The last tick seen. `None` until the first tick, and events that need a
-    /// time are ignored until then.
+    /// The last tick seen, `None` until the first tick. A `HotkeyStart` before
+    /// then is ignored; mic users seen before then arm on the first tick.
     now: Option<Instant>,
 }
 
@@ -78,7 +81,7 @@ impl Session {
     pub fn new(allowlist: Vec<String>, debounce: Duration, grace: Duration) -> Self {
         Self {
             phase: Phase::Idle,
-            allowlist,
+            allowlist: allowlist.iter().map(|a| a.to_lowercase()).collect(),
             debounce,
             grace,
             pending: Vec::new(),
@@ -112,6 +115,10 @@ impl Session {
     fn tick(&mut self, t: Instant) -> Action {
         self.now = Some(t);
         match self.phase {
+            Phase::Idle if !self.pending.is_empty() => {
+                self.phase = Phase::Armed { since: t };
+                Action::StartCache
+            }
             Phase::Armed { since } if t.duration_since(since) >= self.debounce => {
                 self.start_recording(since)
             }
@@ -130,6 +137,9 @@ impl Session {
         match &mut self.phase {
             Phase::Idle => {
                 let Some(now) = self.now else {
+                    // No time yet to arm at: the first tick arms instead, so
+                    // a meeting already running at startup is not lost.
+                    self.pending.push(user);
                     return Action::None;
                 };
                 self.pending = vec![user];
@@ -152,7 +162,10 @@ impl Session {
 
     fn mic_closed(&mut self, node_id: u32) -> Action {
         match &mut self.phase {
-            Phase::Idle => Action::None,
+            Phase::Idle => {
+                remove_node(&mut self.pending, node_id);
+                Action::None
+            }
             Phase::Armed { .. } => {
                 if !remove_node(&mut self.pending, node_id) || !self.pending.is_empty() {
                     return Action::None;
@@ -177,7 +190,13 @@ impl Session {
                 None => Action::None,
             },
             Phase::Armed { since } => self.start_recording(since),
-            Phase::Recording { .. } => Action::None,
+            // Asking to record during the grace period keeps the recording.
+            Phase::Recording {
+                ref mut closed_at, ..
+            } => {
+                *closed_at = None;
+                Action::None
+            }
         }
     }
 
@@ -315,6 +334,15 @@ mod tests {
         s.handle(DetectEvent::Tick(t0));
         let upper = user(4, "BRAVE", "whatever");
         assert_eq!(s.handle(DetectEvent::MicOpened(upper)), Action::StartCache);
+
+        // Allowlist entries match case-insensitively against app_name too.
+        let mut s = Session::new(vec!["Zoom".into()], DEBOUNCE, GRACE);
+        s.handle(DetectEvent::Tick(t0));
+        let zoom_us = user(5, "CptHost", "zoom.us");
+        assert_eq!(
+            s.handle(DetectEvent::MicOpened(zoom_us)),
+            Action::StartCache
+        );
     }
 
     #[test]
@@ -462,5 +490,51 @@ mod tests {
         assert_eq!(s.handle(DetectEvent::HotkeyStop), Action::None);
         assert_eq!(s.handle(DetectEvent::HotkeyDiscard), Action::None);
         assert_eq!(s.phase(), &Phase::Idle);
+    }
+
+    #[test]
+    fn mic_opened_before_first_tick_arms_on_that_tick() {
+        let t0 = Instant::now();
+        let mut s = session();
+        assert_eq!(s.handle(DetectEvent::MicOpened(brave())), Action::None);
+        let zoom = user(2, "zoom", "Zoom");
+        assert_eq!(s.handle(DetectEvent::MicOpened(zoom)), Action::None);
+        assert_eq!(s.handle(DetectEvent::MicClosed(2)), Action::None);
+        assert_eq!(s.phase(), &Phase::Idle);
+        assert_eq!(s.handle(DetectEvent::Tick(t0)), Action::StartCache);
+        assert_eq!(s.phase(), &Phase::Armed { since: t0 });
+        assert_eq!(
+            s.handle(DetectEvent::Tick(t0 + secs(9))),
+            Action::StartRecording {
+                source_app: "brave".into()
+            }
+        );
+        assert_eq!(
+            s.phase(),
+            &Phase::Recording {
+                since: t0,
+                users: vec![brave()],
+                closed_at: None,
+            }
+        );
+    }
+
+    #[test]
+    fn hotkey_start_during_grace_cancels_finish() {
+        let t0 = Instant::now();
+        let mut s = recording(t0);
+        let closed = t0 + secs(60);
+        s.handle(DetectEvent::Tick(closed));
+        s.handle(DetectEvent::MicClosed(1));
+        assert_eq!(s.handle(DetectEvent::HotkeyStart), Action::None);
+        assert!(matches!(
+            s.phase(),
+            Phase::Recording {
+                closed_at: None,
+                ..
+            }
+        ));
+        assert_eq!(s.handle(DetectEvent::Tick(closed + secs(31))), Action::None);
+        assert_eq!(s.handle(DetectEvent::HotkeyStop), Action::Finish);
     }
 }
