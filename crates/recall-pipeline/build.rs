@@ -4,7 +4,8 @@
 //! `sherpa-onnx-sys` emits its rpath with `cargo:rustc-link-arg`, which only
 //! applies to its own targets, so binaries linking this crate would not find
 //! `libsherpa-onnx-c-api.so` at run time without `LD_LIBRARY_PATH`. This
-//! script adds the build-time library directory, `$ORIGIN` (where
+//! script adds the build-time library directory (debug builds only, so a
+//! release binary never points into `target/`), `$ORIGIN` (where
 //! `sherpa-onnx-sys` also copies the libraries) and `$ORIGIN/../lib/recall`
 //! (the installed layout) as rpaths, and exports the build-time directory as
 //! `RECALL_SHERPA_LIB_DIR` for `recall_pipeline::models::shared_library_dir`.
@@ -41,7 +42,9 @@ fn main() {
 
     match lib_dir(&out_dir, &prebuilt) {
         Some(dir) => {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+            if env::var("PROFILE").as_deref() == Ok("debug") {
+                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+            }
             println!("cargo:rustc-env=RECALL_SHERPA_LIB_DIR={}", dir.display());
             println!("cargo:lib_dir={}", dir.display());
         }
