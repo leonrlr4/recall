@@ -7,3 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 recall-store.workspace = true
+anyhow.workspace = true
+ogg = "0.9"
+opus = "0.4"
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
