@@ -19,7 +19,7 @@ python3 -m unittest bench/test_run.py # tests for the scoring
 |---|---|
 | `found` | Fraction of truth tokens that appear in a transcript line within 2 s of the truth line, on either side. Each transcript token matches at most one truth token, so a repeated 的 needs as many 的 in the transcript. Matching tries the truth line's side first, then either side, nearest in time first |
 | `side` | Of the found tokens, the fraction that appear on the truth line's side (`me` or `them`) |
-| `leaked` | Transcript lines on `me` whose tokens mostly (at least half) belong to a `them` truth line in the same window: the remote voice echoing into the microphone |
+| `leaked` | Transcript lines on `me` whose tokens mostly (at least half) belong to a `them` truth line in the same window, and not to a `me` truth line there: the remote voice echoing into the microphone |
 | `lines` | Number of transcript lines |
 
 Chinese counts one token per character, other text one per lowercase word,

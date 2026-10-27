@@ -81,6 +81,15 @@ class ScoreTest(unittest.TestCase):
         s = run.score(truth, [line(1500, 2500, "me", "好")])
         self.assertAlmostEqual(s["found"], 0.5)
         self.assertAlmostEqual(s["side"], 1.0)
+        self.assertEqual(s["leaked"], 0)
+
+    def test_echo_without_nearby_me_truth_leaks(self):
+        truth = {"lines": [
+            truth_line(0, 1000, "them", "好"),
+            truth_line(8000, 9000, "me", "好"),
+        ]}
+        s = run.score(truth, [line(0, 1000, "me", "好")])
+        self.assertEqual(s["leaked"], 1)
 
     def test_transcript_order_does_not_change_scores(self):
         truth = {"lines": [

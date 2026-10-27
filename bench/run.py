@@ -13,7 +13,8 @@ Metrics per case:
   side    of the found tokens, the fraction also present in such a line on
           the truth line's side ("me" or "them")
   leaked  transcript lines on "me" that match a "them" truth line in the
-          same window (the remote voice echoing into the microphone)
+          same window and no "me" truth line there (the remote voice echoing
+          into the microphone)
   lines   number of transcript lines
 
 Chinese is scored per character, everything else per lowercase word, with
@@ -32,8 +33,8 @@ from pathlib import Path
 BENCH = Path(__file__).resolve().parent
 REPO = BENCH.parent
 WINDOW_MS = 2000
-# A "me" line leaks when at least this fraction of its tokens belong to one
-# "them" truth line in the window.
+# A transcript line matches a truth line when at least this fraction of its
+# tokens belong to it; see `leaked`.
 LEAK_OVERLAP = 0.5
 METRICS = ("found", "side", "leaked", "lines")
 
@@ -100,21 +101,24 @@ def score(truth, transcript):
         if consume(tok, near):
             found += 1
 
-    them_truth = [
-        (tl["start_ms"] - WINDOW_MS, tl["end_ms"] + WINDOW_MS, set(toks))
+    windows = [
+        (tl["side"], tl["start_ms"] - WINDOW_MS, tl["end_ms"] + WINDOW_MS, set(toks))
         for tl, toks, _ in plans
-        if tl["side"] == "them"
     ]
 
-    leaked = 0
-    for t, toks in tokens:
-        if t["side"] != "me" or not toks:
-            continue
-        if any(
-            _overlaps(t, lo, hi) and len(toks & ttoks) / len(toks) >= LEAK_OVERLAP
-            for lo, hi, ttoks in them_truth
-        ):
-            leaked += 1
+    def matches(t, toks, side):
+        return any(
+            wside == side and _overlaps(t, lo, hi) and len(toks & ttoks) / len(toks) >= LEAK_OVERLAP
+            for wside, lo, hi, ttoks in windows
+        )
+
+    # A "me" line that also matches a "me" truth line nearby is the speaker's
+    # own words (both sides said the same thing), not an echo.
+    leaked = sum(
+        1
+        for t, toks in tokens
+        if t["side"] == "me" and toks and matches(t, toks, "them") and not matches(t, toks, "me")
+    )
 
     return {
         "found": found / total if total else None,
