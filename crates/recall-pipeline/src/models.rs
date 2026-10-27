@@ -76,6 +76,16 @@ pub fn spec(id: ModelId) -> ModelSpec {
     }
 }
 
+/// The directory the sherpa-onnx shared libraries (`libsherpa-onnx-c-api.so`,
+/// `libonnxruntime.so`) were linked from at build time, for an installer to
+/// copy them beside the binary or into `../lib/recall`. `None` when the build
+/// script could not find them.
+pub fn shared_library_dir() -> Option<PathBuf> {
+    Some(env!("RECALL_SHERPA_LIB_DIR"))
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+}
+
 /// The model file under `models_dir`, whether or not it exists yet.
 pub fn path(models_dir: &Path, id: ModelId) -> PathBuf {
     models_dir.join(spec(id).file)
@@ -232,6 +242,16 @@ fn extract_member(tarball: &Path, name: &str, out: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_library_dir_holds_sherpa_c_api() {
+        let dir = shared_library_dir().expect("build script found the sherpa libraries");
+        assert!(
+            dir.join("libsherpa-onnx-c-api.so").is_file(),
+            "{}",
+            dir.display()
+        );
+    }
 
     #[test]
     fn path_joins_models_dir_and_spec_file() {

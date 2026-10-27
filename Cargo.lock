@@ -1441,12 +1441,14 @@ name = "recall-pipeline"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bzip2 0.5.2",
  "futures-util",
  "opencc",
  "recall-llm",
  "recall-store",
  "reqwest",
+ "serde_json",
  "sha2 0.10.9",
  "sherpa-onnx",
  "tar",
