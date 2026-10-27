@@ -2113,6 +2113,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "libc",
  "notify-rust",
  "predicates",
  "recall-audio",

@@ -21,6 +21,7 @@ tokio.workspace = true
 tracing.workspace = true
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
+libc = "0.2"
 notify-rust = "4"
 rustix = { version = "1", features = ["fs"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

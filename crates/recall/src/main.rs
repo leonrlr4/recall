@@ -124,8 +124,22 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let runtime = tokio::runtime::Runtime::new()?;
             let result = runtime.block_on(recall::daemon::run(config));
             runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
-            result?;
-            return Ok(ExitCode::SUCCESS);
+            let code = match result {
+                Ok(()) => 0,
+                Err(err) => {
+                    eprintln!("recall: {err:#}");
+                    1
+                }
+            };
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            // The worker thread is detached and may be inside whisper or
+            // onnxruntime. A normal exit runs atexit handlers and C++ static
+            // destructors that would tear those libraries down under it, so
+            // leave without them; the startup sweep handles the interrupted
+            // job.
+            // SAFETY: `_exit` only ends the process; nothing runs after it.
+            unsafe { libc::_exit(code) }
         }
         Cmd::Start => Command::Start,
         Cmd::Stop => Command::Stop,
