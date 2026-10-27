@@ -218,6 +218,7 @@ fn capture_tone(
     run(Command::new("pw-play").arg(&tone));
     sleep(Duration::from_millis(300));
     let sys_peak = f32::from_bits(levels.sys.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(capture.is_running());
     capture.stop().unwrap();
     writer.lock().unwrap().flush().unwrap();
 

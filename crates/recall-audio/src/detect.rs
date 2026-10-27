@@ -6,7 +6,7 @@
 //! info has. So the detector binds every Client global and reports a stream
 //! once its client's info has arrived.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -25,6 +25,10 @@ const APP_NAME_KEY: &str = "application.name";
 /// Reports microphone streams as [`DetectEvent::MicOpened`] and
 /// [`DetectEvent::MicClosed`] from a thread running its own PipeWire main
 /// loop. Streams that are already open when it starts are reported too.
+///
+/// If the PipeWire connection fails, the detector sends
+/// [`DetectEvent::DetectorDied`] and drops its sender, so the receiver also
+/// sees the channel disconnect. The owner restarts it.
 pub struct Detector {
     quit: pw::channel::Sender<()>,
     thread: Option<JoinHandle<()>>,
@@ -155,21 +159,29 @@ fn run(
         }
     };
 
+    let quit_requested = Rc::new(Cell::new(false));
     let main_loop_weak = main_loop.downgrade();
+    let requested = quit_requested.clone();
     let _quit = quit_rx.attach(main_loop.loop_(), move |()| {
+        requested.set(true);
         if let Some(main_loop) = main_loop_weak.upgrade() {
             main_loop.quit();
         }
     });
+    let core_error: Rc<RefCell<Option<String>>> = Rc::default();
     let main_loop_weak = main_loop.downgrade();
+    let error_slot = core_error.clone();
     let _core_listener = core
         .add_listener_local()
         .error(move |id, _seq, res, message| {
             tracing::error!(id, res, message, "PipeWire error in the detector");
-            if id == pw::core::PW_ID_CORE
-                && let Some(main_loop) = main_loop_weak.upgrade()
-            {
-                main_loop.quit();
+            if id == pw::core::PW_ID_CORE {
+                error_slot.borrow_mut().get_or_insert_with(|| {
+                    format!("PipeWire connection failed ({res}): {message}")
+                });
+                if let Some(main_loop) = main_loop_weak.upgrade() {
+                    main_loop.quit();
+                }
             }
         })
         .register();
@@ -263,4 +275,14 @@ fn run(
 
     let _ = ready.send(Ok(()));
     main_loop.run();
+    if !quit_requested.get() {
+        let reason = core_error
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| "the PipeWire main loop ended unexpectedly".into());
+        tracing::error!(%reason, "detector died");
+        let _ = tracker.borrow().tx.send(DetectEvent::DetectorDied(reason));
+    }
+    // Returning drops the tracker and with it the event sender, so the
+    // receiver sees the channel disconnect.
 }

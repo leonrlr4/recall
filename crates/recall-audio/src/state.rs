@@ -19,6 +19,9 @@ pub enum DetectEvent {
     MicOpened(MicUser),
     /// The stream with this node id closed.
     MicClosed(u32),
+    /// The detector's PipeWire connection ended; it sends nothing more. The
+    /// session ignores this; the daemon restarts the detector.
+    DetectorDied(String),
     HotkeyStart,
     HotkeyStop,
     HotkeyDiscard,
@@ -94,6 +97,7 @@ impl Session {
             DetectEvent::Tick(t) => self.tick(t),
             DetectEvent::MicOpened(user) => self.mic_opened(user),
             DetectEvent::MicClosed(node_id) => self.mic_closed(node_id),
+            DetectEvent::DetectorDied(_) => Action::None,
             DetectEvent::HotkeyStart => self.hotkey_start(),
             DetectEvent::HotkeyStop => match self.phase {
                 Phase::Recording { .. } => self.reset(Action::Finish),
@@ -403,6 +407,18 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn detector_died_changes_nothing() {
+        let t0 = Instant::now();
+        let mut s = recording(t0);
+        let before = s.phase().clone();
+        assert_eq!(
+            s.handle(DetectEvent::DetectorDied("gone".into())),
+            Action::None
+        );
+        assert_eq!(*s.phase(), before);
     }
 
     #[test]

@@ -599,6 +599,7 @@ dependencies = [
  "opus",
  "pipewire",
  "recall-store",
+ "rtrb",
  "serde_json",
  "tempfile",
  "tracing",
@@ -690,6 +691,12 @@ checksum = "353b74f9810d5b085b6c42c9d86a5f0fdb795553235cdd48753b32e3809d18a7"
 dependencies = [
  "thiserror",
 ]
+
+[[package]]
+name = "rtrb"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5974e397833d890f2f74963408e0d4a6cd8eda2f6a445ae06750291b5d7a997e"
 
 [[package]]
 name = "rusqlite"
