@@ -94,12 +94,15 @@ impl WhisperTranscriber {
         params.set_no_context(true);
         params.set_single_segment(false);
         params.set_suppress_blank(true);
-        // No initial prompt, and do not add one: whisper.cpp tokenizes the
-        // prompt with std::regex, and the prebuilt static sherpa-onnx
-        // libraries (libsherpa-onnx-core.a, libonnxruntime.a) carry their own
-        // std::regex template instantiations from an older GCC. The linker
-        // keeps theirs, so `whisper_tokenize` aborts with
-        // "free(): invalid pointer". Traditional output comes from
+        // No initial prompt. While sherpa-onnx was linked statically, any
+        // prompt aborted `whisper_tokenize` with "free(): invalid pointer"
+        // (its older-GCC std::regex instantiations replaced whisper.cpp's).
+        // With the shared libraries that crash is gone: tested on
+        // 2026-10-28, "繁體中文，English terms as is。" tokenized and
+        // transcribed the fixture. But Breeze then hallucinates on silence:
+        // the 700 ms of leading silence in `whisper_transcribes_fixture`
+        // came out as "In this case, the word is not used.", which the noise
+        // filter does not catch. Traditional output comes from
         // `to_traditional` instead.
         params.set_print_special(false);
         params.set_print_progress(false);
