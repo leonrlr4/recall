@@ -128,6 +128,9 @@ impl Transcriber for WhisperTranscriber {
     ) -> Result<Vec<Utterance>> {
         // whisper-rs leaks the C copy of the language on every
         // `set_language`, so it is set once per call, not per window.
+        if lang.contains('\0') {
+            bail!("language code {lang:?} contains a NUL byte");
+        }
         let mut params = self.params.clone();
         params.set_language(Some(lang));
         let eot = self.ctx.token_eot();
@@ -153,24 +156,19 @@ impl Transcriber for WhisperTranscriber {
                     window[0].original_start_ms
                 )
             })?;
-            // A whisper time (centiseconds into the window) on the
-            // recording's timeline.
-            let at = |centis: i64| {
-                let ms = u32::try_from(centis.max(0) * 10).unwrap_or(u32::MAX);
-                map_back(&window, ms)
-            };
             for segment in self.state.as_iter() {
                 let raw = segment.to_str_lossy().context("reading whisper segment")?;
                 let text = to_traditional(raw.trim());
                 if is_noise(&text) {
                     continue;
                 }
-                let start_ms = at(segment.start_timestamp());
+                let start_ms = map_back(&window, centis_to_ms(segment.start_timestamp()));
+                let end_ms = map_back_end(&window, centis_to_ms(segment.end_timestamp()));
                 out.push(Utterance {
                     start_ms,
-                    end_ms: at(segment.end_timestamp()).max(start_ms),
+                    end_ms: end_ms.max(start_ms),
                     text,
-                    words: words(&segment, eot, &at),
+                    words: words(&segment, eot, &window),
                 });
             }
         }
@@ -199,6 +197,10 @@ struct Piece {
 /// [`GAP_MS`] of silence between them, while the window stays within
 /// [`WINDOW_MS`]; a piece longer than that is a window of its own.
 fn glue_regions(len: usize, regions: &[Region]) -> Vec<Vec<Piece>> {
+    debug_assert!(
+        regions.windows(2).all(|p| p[0].start_ms <= p[1].start_ms),
+        "regions must be sorted by start"
+    );
     let len_ms = u32::try_from(len / SAMPLES_PER_MS).unwrap_or(u32::MAX);
     let mut windows: Vec<Vec<Piece>> = Vec::new();
     let mut window_ms = 0;
@@ -238,9 +240,15 @@ fn glue_regions(len: usize, regions: &[Region]) -> Vec<Vec<Piece>> {
     windows
 }
 
-/// Maps `glued_ms` in a window back to the recording's timeline. A time in
-/// the silence between two pieces snaps to the start of the following piece;
-/// a time past the last piece (the 1 s minimum padding) snaps to its end.
+/// A whisper time (centiseconds) in milliseconds.
+fn centis_to_ms(centis: i64) -> u32 {
+    u32::try_from(centis.max(0).saturating_mul(10)).unwrap_or(u32::MAX)
+}
+
+/// Maps a start time `glued_ms` in a window back to the recording's
+/// timeline. A time in the silence between two pieces snaps forward to the
+/// start of the following piece; a time past the last piece (the 1 s minimum
+/// padding) snaps to its end.
 fn map_back(window: &[Piece], glued_ms: u32) -> u32 {
     for piece in window {
         if glued_ms < piece.glued_start_ms {
@@ -253,14 +261,33 @@ fn map_back(window: &[Piece], glued_ms: u32) -> u32 {
     window.last().map_or(0, |p| p.original_start_ms + p.len_ms)
 }
 
+/// Maps an end time `glued_ms` in a window back to the recording's timeline.
+/// Whisper puts closing timestamps in the trailing silence, which in a window
+/// is a glue gap, and the next piece can be minutes later in the recording;
+/// so a time in a gap, or past the last piece, snaps back to the end of the
+/// preceding piece.
+fn map_back_end(window: &[Piece], glued_ms: u32) -> u32 {
+    let mut previous_end = window.first().map_or(0, |p| p.original_start_ms);
+    for piece in window {
+        if glued_ms < piece.glued_start_ms {
+            return previous_end;
+        }
+        if glued_ms <= piece.glued_start_ms + piece.len_ms {
+            return piece.original_start_ms + (glued_ms - piece.glued_start_ms);
+        }
+        previous_end = piece.original_start_ms + piece.len_ms;
+    }
+    previous_end
+}
+
 /// Groups a segment's text tokens into words. A word starts at a token that
 /// begins with whitespace, and at every boundary next to a non-ASCII
 /// character, so Chinese splits per character (byte-level tokens that hold
 /// half a character are joined first) and English per space-led word.
 /// Special and timestamp tokens (ids from end-of-text up) are skipped, as are
-/// words with no letters or digits. `at` maps whisper centiseconds to the
+/// words with no letters or digits. Times are mapped through `window` to the
 /// recording's timeline.
-fn words(segment: &WhisperSegment<'_>, eot: WhisperTokenId, at: &dyn Fn(i64) -> u32) -> Vec<Word> {
+fn words(segment: &WhisperSegment<'_>, eot: WhisperTokenId, window: &[Piece]) -> Vec<Word> {
     let mut out = Vec::new();
     let mut bytes: Vec<u8> = Vec::new();
     let (mut t0, mut t1) = (0i64, 0i64);
@@ -268,10 +295,10 @@ fn words(segment: &WhisperSegment<'_>, eot: WhisperTokenId, at: &dyn Fn(i64) -> 
         let text = to_traditional(String::from_utf8_lossy(bytes).trim());
         bytes.clear();
         if text.chars().any(char::is_alphanumeric) {
-            let start_ms = at(t0);
+            let start_ms = map_back(window, centis_to_ms(t0));
             out.push(Word {
                 start_ms,
-                end_ms: at(t1).max(start_ms),
+                end_ms: map_back_end(window, centis_to_ms(t1)).max(start_ms),
                 text,
             });
         }
@@ -315,10 +342,17 @@ fn words(segment: &WhisperSegment<'_>, eot: WhisperTokenId, at: &dyn Fn(i64) -> 
 }
 
 /// Phrases Whisper-family models invent over silence or music, learnt from
-/// subtitle credits in their training data. Matched only in short text.
-const HALLUCINATIONS: &[&str] = &["Amara", "不吝點贊", "點點欄目"];
-/// With "字幕" (subtitles), these mark a subtitle credit line.
-const SUBTITLE_CREDITS: &[&str] = &["提供", "志願", "製作", "校對", "翻譯", "by", "By"];
+/// subtitle credits and video outros in their training data. Matched only
+/// in short text. Each is a credit-line shape, not a topic word, so speech
+/// about subtitles ("這個字幕檔是誰製作的") is kept.
+const HALLUCINATIONS: &[&str] = &[
+    "字幕由",
+    "字幕組",
+    "字幕志願者",
+    "Amara.org",
+    "不吝點贊",
+    "點點欄目",
+];
 /// Longer text is real speech even if it mentions one of the phrases above.
 const HALLUCINATION_MAX_CHARS: usize = 40;
 
@@ -343,8 +377,17 @@ fn is_noise(text: &str) -> bool {
     if t.chars().count() > HALLUCINATION_MAX_CHARS {
         return false;
     }
-    HALLUCINATIONS.iter().any(|h| t.contains(h))
-        || (t.contains("字幕") && SUBTITLE_CREDITS.iter().any(|c| t.contains(c)))
+    HALLUCINATIONS.iter().any(|h| t.contains(h)) || has_subtitle_by(t)
+}
+
+/// "字幕 by <name>" or "字幕by<name>", with "by" as a whole word.
+fn has_subtitle_by(t: &str) -> bool {
+    t.match_indices("字幕").any(|(i, m)| {
+        let rest = t[i + m.len()..].trim_start();
+        rest.get(..2)
+            .is_some_and(|by| by.eq_ignore_ascii_case("by"))
+            && !rest[2..].starts_with(|c: char| c.is_ascii_alphanumeric())
+    })
 }
 
 /// OpenCC configuration: Simplified to Traditional, Taiwan standard
@@ -441,6 +484,23 @@ mod tests {
     }
 
     #[test]
+    fn glue_regions_window_boundary_is_28000ms() {
+        let r = |start_ms, end_ms| Region { start_ms, end_ms };
+        let len = 100_000 * SAMPLES_PER_MS;
+        // Padded: 0..10200 (10.2 s) and 20000..37500 (17.5 s); with the
+        // 0.3 s gap exactly 28 000 ms.
+        assert_eq!(
+            glue_regions(len, &[r(200, 10_000), r(20_200, 37_300)]),
+            vec![vec![p(0, 0, 10_200), p(10_500, 20_000, 17_500)]]
+        );
+        // One more millisecond splits.
+        assert_eq!(
+            glue_regions(len, &[r(200, 10_000), r(20_200, 37_301)]),
+            vec![vec![p(0, 0, 10_200)], vec![p(0, 20_000, 17_501)]]
+        );
+    }
+
+    #[test]
     fn map_back_snaps_silence_to_next_region() {
         let window = [p(0, 800, 10_400), p(10_700, 11_800, 10_400)];
         assert_eq!(map_back(&window, 0), 800);
@@ -452,6 +512,17 @@ mod tests {
         assert_eq!(map_back(&window, 11_000), 12_100);
         // Past the last piece (minimum-length padding): its end.
         assert_eq!(map_back(&window, 30_000), 22_200);
+
+        // Ends snap back instead: the gap is trailing silence of the piece
+        // before it, and the next piece may be minutes later.
+        assert_eq!(map_back_end(&window, 500), 1_300);
+        assert_eq!(map_back_end(&window, 10_400), 11_200);
+        assert_eq!(map_back_end(&window, 10_500), 11_200);
+        assert_eq!(map_back_end(&window, 10_699), 11_200);
+        assert_eq!(map_back_end(&window, 10_700), 11_800);
+        assert_eq!(map_back_end(&window, 11_000), 12_100);
+        assert_eq!(map_back_end(&window, 21_100), 22_200);
+        assert_eq!(map_back_end(&window, 30_000), 22_200);
     }
 
     #[test]
@@ -476,6 +547,14 @@ mod tests {
             "好",
             "OK",
             "我們把字幕檔 export 出來",
+            // Near misses for each credit pattern.
+            "這個字幕檔是誰製作的",
+            "字幕的由來是什麼",
+            "字幕要組合起來",
+            "我們找志願者做字幕",
+            "我們用 Amara 做字幕",
+            "字幕 bypass 掉",
+            "stand by 一下",
             "(我覺得) 可以",
             "3.5",
         ] {
@@ -583,5 +662,8 @@ mod tests {
             )
             .unwrap();
         assert!(silence.is_empty(), "{silence:?}");
+
+        let nul = whisper.transcribe(&samples, &regions, "z\0h").unwrap_err();
+        assert!(format!("{nul:#}").contains("NUL"), "{nul:#}");
     }
 }
