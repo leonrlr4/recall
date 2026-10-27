@@ -12,6 +12,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -44,6 +45,8 @@ pub struct Recorder {
     active: Option<Active>,
     /// Set exactly when `active` is.
     capture: Option<Capture>,
+    /// Told after a kept recording is queued.
+    wake: Option<Sender<()>>,
 }
 
 impl Recorder {
@@ -59,7 +62,15 @@ impl Recorder {
             levels: Arc::new(Levels::default()),
             active: None,
             capture: None,
+            wake: None,
         }
+    }
+
+    /// Sends `()` on `wake` whenever a finished recording is queued, so the
+    /// worker starts on it without waiting for its next poll.
+    pub fn with_wake(mut self, wake: Sender<()>) -> Self {
+        self.wake = Some(wake);
+        self
     }
 
     /// Carries out `action`, taken at `now`.
@@ -122,6 +133,9 @@ impl Recorder {
                     Some(meeting) => {
                         tracing::info!(id = meeting.id.0, "recording kept");
                         notify::processing(&meeting.title);
+                        if let Some(wake) = &self.wake {
+                            let _ = wake.send(());
+                        }
                     }
                     None => tracing::info!(id = active.dir.id.0, "recording too short; deleted"),
                 }
