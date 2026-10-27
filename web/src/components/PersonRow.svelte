@@ -60,6 +60,12 @@
     if (!name || name === person.name) return;
     try {
       await onrename(name);
+      // The reloaded list is sorted by name, so the row may have moved, and
+      // moving the focused node blurs it; focus it again in its new place.
+      if (refocus) {
+        await tick();
+        button?.focus();
+      }
     } catch {
       // The page shows the error; reopen with what was typed.
       draft = name;
