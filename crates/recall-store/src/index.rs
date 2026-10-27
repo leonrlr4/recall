@@ -30,9 +30,29 @@ CREATE TABLE IF NOT EXISTS meetings (
     state TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS meetings_started ON meetings(started);
-CREATE VIRTUAL TABLE IF NOT EXISTS segments USING fts5(
-    meeting UNINDEXED, start_ms UNINDEXED, speaker, text, tokenize='trigram'
+CREATE TABLE IF NOT EXISTS segments (
+    id INTEGER PRIMARY KEY,
+    meeting TEXT NOT NULL,
+    start_ms INTEGER NOT NULL,
+    speaker TEXT NOT NULL,
+    text TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS segments_meeting ON segments(meeting);
+CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
+    speaker, text, content='segments', content_rowid='id', tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS segments_ai AFTER INSERT ON segments BEGIN
+    INSERT INTO segments_fts(rowid, speaker, text) VALUES (new.id, new.speaker, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS segments_ad AFTER DELETE ON segments BEGIN
+    INSERT INTO segments_fts(segments_fts, rowid, speaker, text)
+    VALUES ('delete', old.id, old.speaker, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS segments_au AFTER UPDATE ON segments BEGIN
+    INSERT INTO segments_fts(segments_fts, rowid, speaker, text)
+    VALUES ('delete', old.id, old.speaker, old.text);
+    INSERT INTO segments_fts(rowid, speaker, text) VALUES (new.id, new.speaker, new.text);
+END;
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY,
     meeting TEXT NOT NULL,
@@ -43,6 +63,23 @@ CREATE TABLE IF NOT EXISTS jobs (
     created INTEGER NOT NULL       -- Unix milliseconds
 );
 CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, created);
+";
+
+/// Moves the segments of an index made before `segments` became a plain
+/// table (it was itself the FTS5 table, so deleting one meeting's segments
+/// scanned every row) into the current schema. Runs before [`SCHEMA`].
+const MIGRATE_FTS_SEGMENTS: &str = "
+ALTER TABLE segments RENAME TO segments_old;
+CREATE TABLE segments (
+    id INTEGER PRIMARY KEY,
+    meeting TEXT NOT NULL,
+    start_ms INTEGER NOT NULL,
+    speaker TEXT NOT NULL,
+    text TEXT NOT NULL
+);
+INSERT INTO segments (meeting, start_ms, speaker, text)
+    SELECT meeting, start_ms, speaker, text FROM segments_old;
+DROP TABLE segments_old;
 ";
 
 /// The daemon, the web server and the CLI may open the index at once.
@@ -276,8 +313,28 @@ impl Index {
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
+        let tx = conn.unchecked_transaction()?;
+        let old_segments: Option<String> = tx
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'segments'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let migrate = old_segments.is_some_and(|sql| sql.to_lowercase().contains("fts5"));
+        if migrate {
+            tx.execute_batch(MIGRATE_FTS_SEGMENTS)
+                .with_context(|| format!("migrating segments in {}", path.display()))?;
+        }
+        tx.commit()?;
         conn.execute_batch(SCHEMA)
             .with_context(|| format!("creating schema in {}", path.display()))?;
+        if migrate {
+            conn.execute(
+                "INSERT INTO segments_fts(segments_fts) VALUES ('rebuild')",
+                [],
+            )?;
+        }
         Ok(Self { conn })
     }
 
@@ -321,7 +378,8 @@ impl Index {
             } else {
                 arg(
                     &mut sql,
-                    " OR id IN (SELECT meeting FROM segments WHERE segments MATCH ?))",
+                    " OR id IN (SELECT s.meeting FROM segments_fts \
+                     JOIN segments s ON s.id = segments_fts.rowid WHERE segments_fts MATCH ?))",
                     Value::Text(fts_phrase(q)),
                 );
             }
@@ -362,9 +420,10 @@ impl Index {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         if q.chars().count() >= TRIGRAM {
             let mut stmt = self.conn.prepare_cached(
-                "SELECT meeting, start_ms, speaker,
-                        snippet(segments, 3, '[', ']', '…', 64)
-                 FROM segments WHERE segments MATCH ?1 ORDER BY rank LIMIT ?2",
+                "SELECT s.meeting, s.start_ms, s.speaker,
+                        snippet(segments_fts, 1, '[', ']', '…', 64)
+                 FROM segments_fts JOIN segments s ON s.id = segments_fts.rowid
+                 WHERE segments_fts MATCH ?1 ORDER BY segments_fts.rank LIMIT ?2",
             )?;
             let rows = stmt.query_map(params![fts_phrase(q), limit], hit)?;
             return Ok(rows.collect::<rusqlite::Result<_>>()?);
@@ -655,6 +714,77 @@ mod tests {
         index.remove(&MeetingId("a".into())).unwrap();
         assert!(index.search("new", 10).unwrap().is_empty());
         assert!(index.list(&ListFilter::default()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn upserting_one_meeting_leaves_another_meetings_segments() {
+        let (_dir, index) = open();
+        let speakers = Speakers::default();
+        index
+            .upsert(
+                &meeting("a", None, &["alpha words", "more alpha"]),
+                &speakers,
+                true,
+            )
+            .unwrap();
+        index
+            .upsert(&meeting("b", None, &["beta words"]), &speakers, true)
+            .unwrap();
+        index
+            .upsert(&meeting("a", None, &["gamma words"]), &speakers, true)
+            .unwrap();
+        index.remove(&MeetingId("x".into())).unwrap();
+
+        let hits = index.search("words", 10).unwrap();
+        let mut found: Vec<_> = hits.iter().map(|h| h.meeting.0.as_str()).collect();
+        found.sort();
+        assert_eq!(found, ["a", "b"]);
+        assert_eq!(index.search("beta", 10).unwrap()[0].meeting.0, "b");
+        assert!(index.search("alpha", 10).unwrap().is_empty());
+        let rows: i64 = index
+            .conn
+            .query_row("SELECT count(*) FROM segments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
+        // The delete goes through the meeting index, not a scan.
+        let plan: String = index
+            .conn
+            .query_row(
+                "EXPLAIN QUERY PLAN DELETE FROM segments WHERE meeting = 'a'",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("segments_meeting"), "{plan}");
+    }
+
+    #[test]
+    fn open_migrates_an_fts_segments_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE VIRTUAL TABLE segments USING fts5(
+                     meeting UNINDEXED, start_ms UNINDEXED, speaker, text, tokenize='trigram');
+                 INSERT INTO segments VALUES ('a', 1000, 'Me', 'old export timeout');",
+            )
+            .unwrap();
+        }
+        let index = Index::open(&path).unwrap();
+        let hits = index.search("export", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].meeting.0.as_str(), hits[0].start_ms), ("a", 1000));
+        // Opening again leaves it alone.
+        drop(index);
+        assert_eq!(
+            Index::open(&path)
+                .unwrap()
+                .search("export", 10)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
