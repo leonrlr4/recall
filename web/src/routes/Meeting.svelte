@@ -283,8 +283,12 @@
         })
       : '',
   );
-  const meetingState = $derived(meeting ? stateOfSteps(meeting.steps) : 'done');
   const progress = $derived(live.progress[id]);
+  // A progress event names the step running now, which the loaded steps
+  // only know as of the last load; done/failed reload the meeting.
+  const meetingState = $derived(
+    progress ? `processing:${progress.step}` : meeting ? stateOfSteps(meeting.steps) : 'done',
+  );
   const summarizing = $derived(meetingState !== 'done' && !meetingState.startsWith('failed'));
 </script>
 
