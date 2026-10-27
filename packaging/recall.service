@@ -1,0 +1,12 @@
+[Unit]
+Description=recall meeting recorder
+After=pipewire.service
+
+[Service]
+ExecStart=%h/.cargo/bin/recall daemon
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
