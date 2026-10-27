@@ -16,6 +16,7 @@ pub mod diarize;
 pub mod merge;
 pub mod models;
 pub mod naming;
+pub mod runner;
 pub mod summarize;
 pub mod transcribe;
 pub mod vad;

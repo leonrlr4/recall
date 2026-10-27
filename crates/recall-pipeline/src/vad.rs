@@ -22,8 +22,9 @@ impl Region {
     }
 }
 
-/// Finds speech in 16 kHz mono audio.
-pub trait Vad {
+/// Finds speech in 16 kHz mono audio. `Send` so a pipeline run can move
+/// between threads.
+pub trait Vad: Send {
     /// Speech regions in `samples16k`, in time order.
     fn regions(&self, samples16k: &[f32]) -> Result<Vec<Region>>;
 }
