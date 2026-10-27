@@ -229,10 +229,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let dir = MeetingDir::create(root.path(), at(14, 30), "Weekly sync").unwrap();
         assert_eq!(dir.id.0, "2026-10-27 14:30 Weekly sync");
-        assert_eq!(
-            dir.path(),
-            root.path().join("2026-10-27 14:30 Weekly sync")
-        );
+        assert_eq!(dir.path(), root.path().join("2026-10-27 14:30 Weekly sync"));
         assert!(dir.path().is_dir());
         assert_eq!(dir.audio(), dir.path().join("audio.opus"));
         assert_eq!(dir.markdown(), dir.path().join("meeting.md"));

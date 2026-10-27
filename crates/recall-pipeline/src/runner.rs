@@ -167,7 +167,12 @@ impl Run<'_> {
             Step::Transcribe => self.transcribe(),
             Step::Diarize => self.diarize(),
             Step::Name => self.name(),
-            Step::Summarize => self.summarize().await,
+            Step::Summarize => {
+                // The decoded audio (about 460 MB an hour) is not needed
+                // from here on; free it before the model call.
+                *self.audio = None;
+                self.summarize().await
+            }
             Step::Write => self.write(),
         }
     }
