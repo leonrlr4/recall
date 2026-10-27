@@ -414,13 +414,30 @@ impl Index {
     }
 
     /// Queues processing of `meeting` from step `from`; returns the job id.
+    ///
+    /// If `meeting` already has a pending or running job, that job's id is
+    /// returned and nothing is queued, whatever its step. This keeps crash
+    /// recovery idempotent: it can enqueue again without knowing whether the
+    /// interrupted run already did.
     pub fn enqueue(&self, meeting: &MeetingId, from: Step) -> Result<i64> {
-        self.conn.execute(
+        // One statement, so a concurrent enqueue cannot slip in between the
+        // check and the insert.
+        let inserted = self.conn.execute(
             "INSERT INTO jobs (meeting, from_step, state, attempts, created)
-             VALUES (?1, ?2, 'pending', 0, ?3)",
+             SELECT ?1, ?2, 'pending', 0, ?3
+             WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE meeting = ?1
+                               AND state IN ('pending', 'running'))",
             params![meeting.0, step_name(from), millis(Utc::now())],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        if inserted == 1 {
+            return Ok(self.conn.last_insert_rowid());
+        }
+        Ok(self.conn.query_row(
+            "SELECT id FROM jobs WHERE meeting = ?1 AND state IN ('pending', 'running')
+             ORDER BY id LIMIT 1",
+            params![meeting.0],
+            |row| row.get(0),
+        )?)
     }
 
     /// Takes the oldest pending job: marks it running, counts the attempt,
@@ -770,5 +787,31 @@ mod tests {
         index.rebuild(empty.path(), &Speakers::default()).unwrap();
         let jc = index.enqueue(&a, Step::Write).unwrap();
         assert!(jc > jb);
+    }
+
+    #[test]
+    fn enqueue_dedupes_pending_jobs() {
+        let (_dir, index) = open();
+        let a = MeetingId("a".into());
+        let b = MeetingId("b".into());
+        let ja = index.enqueue(&a, Step::Segment).unwrap();
+        assert_eq!(index.enqueue(&a, Step::Summarize).unwrap(), ja);
+        let jb = index.enqueue(&b, Step::Segment).unwrap();
+        assert_ne!(jb, ja);
+
+        // A running job also absorbs a new request.
+        let running = index.next_job().unwrap().unwrap();
+        assert_eq!(running.id, ja);
+        assert_eq!(index.enqueue(&a, Step::Segment).unwrap(), ja);
+        assert_eq!(running.from_step, Step::Segment);
+
+        // Once it is done or failed, a new job is queued.
+        index.finish_job(ja, false, Some("boom")).unwrap();
+        let again = index.enqueue(&a, Step::Write).unwrap();
+        assert!(again > jb);
+        assert_eq!(index.next_job().unwrap().unwrap().id, jb);
+        let next = index.next_job().unwrap().unwrap();
+        assert_eq!((next.id, next.from_step), (again, Step::Write));
+        assert!(index.next_job().unwrap().is_none());
     }
 }

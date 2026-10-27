@@ -1,10 +1,11 @@
 //! Turns the session's [`Action`]s into captures, meeting directories and
 //! queued jobs, and recovers recordings a crash left in their cache.
 //!
-//! Keeping a recording runs: encode `audio.opus`, write `meeting.json`, clear
-//! `.cache/`, index, enqueue. `meeting.json` is written only after the audio
-//! is complete, so recovery uses it to tell an encoded recording (only the
-//! later steps are redone) from one it must encode itself.
+//! Keeping a recording runs: encode `audio.opus`, write `meeting.json`,
+//! index, enqueue, clear `.cache/`. While `.cache/` holds chunks, recovery
+//! redoes the recording: `meeting.json` is written only after the audio is
+//! complete, so its presence means only indexing and queueing are left, and
+//! both are idempotent ([`Index::enqueue`] returns the existing job).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -96,17 +97,27 @@ impl Recorder {
                 let Some(active) = self.stop() else {
                     return Ok(());
                 };
-                let speakers = lock(&self.speakers);
-                let index = lock(&self.index);
+                // The encode runs without the locks, which the HTTP server
+                // also takes; they are held only to index and queue.
                 let kept = keep(
                     &self.config,
-                    &index,
-                    &speakers,
                     &active.dir,
                     &active.title,
                     active.started.to_utc(),
                     active.source_app,
-                )?;
+                    |meeting| {
+                        let speakers = lock(&self.speakers);
+                        let index = lock(&self.index);
+                        queue(&index, &speakers, meeting)
+                    },
+                );
+                let kept = match kept {
+                    Ok(kept) => kept,
+                    Err(err) => {
+                        notify::failed(&active.title, "saving");
+                        return Err(err);
+                    }
+                };
                 match kept {
                     Some(meeting) => {
                         tracing::info!(id = meeting.id.0, "recording kept");
@@ -261,8 +272,8 @@ fn recover_dir(
     if path.join("meeting.json").is_file() {
         // Saved, so the audio was complete: the crash came after `save`.
         let meeting = Meeting::load(&path)?;
-        dir.clear_cache()?;
         queue(index, speakers, &meeting)?;
+        dir.clear_cache()?;
         return Ok(Some(meeting.id));
     }
     let name = &dir.id.0;
@@ -272,21 +283,23 @@ fn recover_dir(
         .and_then(|t| t.and_local_timezone(Local).earliest())
         .map_or_else(Utc::now, |t| t.to_utc());
     let title = name.get(ID_TIME_LEN + 1..).unwrap_or_default();
-    let kept = keep(config, index, speakers, dir, title, started, None)?;
+    let kept = keep(config, dir, title, started, None, |meeting| {
+        queue(index, speakers, meeting)
+    })?;
     Ok(kept.map(|meeting| meeting.id))
 }
 
-/// Encodes the cache of `dir` and records the meeting, or deletes `dir` if
-/// the cache is shorter than `min_length_secs` (or empty). Returns the
-/// meeting kept.
+/// Encodes the cache of `dir`, saves `meeting.json`, hands the meeting to
+/// `queue` (index and enqueue) and clears the cache; or deletes `dir` if the
+/// cache is shorter than `min_length_secs` (or empty). Returns the meeting
+/// kept.
 fn keep(
     config: &Config,
-    index: &Index,
-    speakers: &Speakers,
     dir: &MeetingDir,
     title: &str,
     started: DateTime<Utc>,
     source_app: Option<String>,
+    queue: impl FnOnce(&Meeting) -> Result<()>,
 ) -> Result<Option<Meeting>> {
     let cache = dir.cache();
     let cached = cache_duration(&cache)?;
@@ -308,8 +321,8 @@ fn keep(
         models: BTreeMap::new(),
     };
     meeting.save(&dir.path())?;
+    queue(&meeting)?;
     dir.clear_cache()?;
-    queue(index, speakers, &meeting)?;
     Ok(Some(meeting))
 }
 

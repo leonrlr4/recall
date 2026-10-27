@@ -128,3 +128,35 @@ fn recovery_after_save_only_clears_and_queues() {
     assert_eq!(Meeting::load(&dir.path()).unwrap(), meeting);
     assert_eq!(index.next_job().unwrap().unwrap().meeting, dir.id);
 }
+
+#[test]
+fn recovery_does_not_queue_a_second_job() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("meetings");
+    let dir = crashed_recording(&root, 3);
+    let config = config(&root, 1);
+    let index = Index::open(&tmp.path().join("index.sqlite")).unwrap();
+    // A crash after enqueue, before the cache was cleared.
+    std::fs::write(dir.audio(), b"encoded").unwrap();
+    let meeting = Meeting {
+        id: dir.id.clone(),
+        title: "Meeting 14:30".into(),
+        started: chrono::Utc::now(),
+        duration_ms: 3_000,
+        source_app: None,
+        steps: Step::ALL.map(|s| (s, StepState::Pending)).into(),
+        segments: vec![],
+        clusters: vec![],
+        summary: None,
+        models: Default::default(),
+    };
+    meeting.save(&dir.path()).unwrap();
+    let job = index.enqueue(&dir.id, Step::Segment).unwrap();
+
+    let ids = Recorder::recover(&config, &index, &Speakers::default()).unwrap();
+
+    assert_eq!(ids, vec![dir.id.clone()]);
+    assert!(!dir.cache().exists());
+    assert_eq!(index.next_job().unwrap().unwrap().id, job);
+    assert!(index.next_job().unwrap().is_none());
+}

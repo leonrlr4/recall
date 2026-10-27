@@ -7,6 +7,7 @@
 //! else talks to it by sending [`DetectEvent`]s into its channel and reads
 //! its [`StatusSnapshot`].
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -31,7 +32,12 @@ const TICK: Duration = Duration::from_secs(1);
 /// must not report as a meeting app.
 const OWN_APP_NAME: &str = "recall";
 const DETECTOR_RETRY_DELAY: Duration = Duration::from_secs(2);
-const DETECTOR_RETRIES: u32 = 5;
+/// More detector deaths (failed restarts included) than this within
+/// [`DETECTOR_DEATH_WINDOW`] end the daemon with an error, leaving systemd to
+/// restart the unit.
+const MAX_DETECTOR_DEATHS: usize = 5;
+const DETECTOR_DEATH_WINDOW: Duration = Duration::from_secs(60);
+const LOCK_FILE: &str = "daemon.lock";
 
 /// Runs the daemon until SIGINT or SIGTERM, or until the recorder or the
 /// control socket fails.
@@ -42,12 +48,11 @@ pub async fn run(config: Config) -> Result<()> {
         )
         .try_init();
 
-    // Recovery would take a running daemon's live cache for a crashed one,
-    // and `serve` would replace its socket.
+    // Held until `run` returns. Without it a second daemon's recovery would
+    // take this one's live cache for a crashed recording, and its `serve`
+    // would replace this one's socket.
+    let _lock = lock_daemon()?;
     let socket = control::socket_path();
-    if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
-        bail!("another recall daemon is listening on {}", socket.display());
-    }
 
     let config = Arc::new(config);
     let index = Index::open(&config.index_path())
@@ -118,7 +123,6 @@ pub async fn run(config: Config) -> Result<()> {
     };
 
     control_server.abort();
-    remove_file(&socket);
     shutdown.store(true, Ordering::Release);
     // The recorder sees the flag within a tick, then finishes any recording,
     // which can take a while for a long one.
@@ -132,14 +136,41 @@ pub async fn run(config: Config) -> Result<()> {
             "the recorder failed while stopping"
         );
     }
+    remove_file(&socket);
     remove_file(&notify::state_path());
     outcome
 }
 
+/// Takes an exclusive lock on `<runtime dir>/daemon.lock`, failing if another
+/// daemon holds it. The lock lasts as long as the returned file is open, and
+/// the kernel drops it when the process dies, so a crash leaves nothing
+/// stale.
+fn lock_daemon() -> Result<std::fs::File> {
+    let dir = control::runtime_dir();
+    control::create_private_dir(&dir)?;
+    let path = dir.join(LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(file),
+        Err(rustix::io::Errno::WOULDBLOCK) => {
+            bail!(
+                "another recall daemon is running (it holds {})",
+                path.display()
+            )
+        }
+        Err(err) => Err(err).with_context(|| format!("locking {}", path.display())),
+    }
+}
+
 /// Feeds detector, control and tick events to the session and carries out
 /// its actions until `shutdown` is set. On shutdown a recording in progress
-/// is kept and a cache still being armed is dropped. Returns an error only
-/// when the detector cannot be restarted.
+/// is kept and a cache still being armed is dropped. When the detector dies
+/// too often, the loop stops the same way and then returns an error.
 fn recorder_loop(
     config: &Config,
     mut recorder: Recorder,
@@ -153,22 +184,30 @@ fn recorder_loop(
         Duration::from_secs(config.debounce_secs),
         Duration::from_secs(config.end_grace_secs),
     );
-    let mut detector = Some(match Detector::spawn(tx.clone(), OWN_APP_NAME) {
-        Ok(detector) => detector,
+    let mut deaths = DeathWindow::default();
+    let mut detector = match Detector::spawn(tx.clone(), OWN_APP_NAME) {
+        Ok(detector) => Some(detector),
         Err(err) => {
             tracing::warn!(err = format!("{err:#}"), "starting the detector");
-            restart_detector(tx, shutdown)?
+            restart_detector(tx, shutdown, &mut deaths)?
         }
-    });
+    };
     let mut reporter = StatusReporter::new(status);
     let mut next_tick = Instant::now();
+    let mut failure = None;
 
     while !shutdown.load(Ordering::Acquire) {
         match rx.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
             Ok(DetectEvent::DetectorDied(reason)) => {
                 tracing::warn!(reason, "the detector died; restarting it");
                 drop(detector.take());
-                detector = Some(restart_detector(tx, shutdown)?);
+                match restart_detector(tx, shutdown, &mut deaths) {
+                    Ok(restarted) => detector = restarted,
+                    Err(err) => {
+                        failure = Some(err);
+                        break;
+                    }
+                }
             }
             Ok(event) => step(&mut session, &mut recorder, &mut reporter, event),
             Err(RecvTimeoutError::Timeout) => {}
@@ -208,7 +247,7 @@ fn recorder_loop(
         }
         Phase::Idle => {}
     }
-    Ok(())
+    failure.map_or(Ok(()), Err)
 }
 
 /// Hands `event` to the session and carries out the resulting action.
@@ -248,25 +287,56 @@ fn apply(recorder: &mut Recorder, action: Action) -> bool {
     }
 }
 
-/// Spawns a new detector, trying up to [`DETECTOR_RETRIES`] times
-/// [`DETECTOR_RETRY_DELAY`] apart.
-fn restart_detector(tx: &Sender<DetectEvent>, shutdown: &AtomicBool) -> Result<Detector> {
-    for attempt in 1..=DETECTOR_RETRIES {
+/// Spawns a new detector [`DETECTOR_RETRY_DELAY`] after each death, a
+/// failed spawn counting as another death. Errors once [`DeathWindow`] says
+/// it has died too often; returns `None` if the daemon is stopping.
+fn restart_detector(
+    tx: &Sender<DetectEvent>,
+    shutdown: &AtomicBool,
+    deaths: &mut DeathWindow,
+) -> Result<Option<Detector>> {
+    loop {
+        if !deaths.record(Instant::now()) {
+            bail!(
+                "the detector died more than {MAX_DETECTOR_DEATHS} times within {} s",
+                DETECTOR_DEATH_WINDOW.as_secs()
+            );
+        }
         std::thread::sleep(DETECTOR_RETRY_DELAY);
         if shutdown.load(Ordering::Acquire) {
-            bail!("stopping while restarting the detector");
+            return Ok(None);
         }
         match Detector::spawn(tx.clone(), OWN_APP_NAME) {
             Ok(detector) => {
-                tracing::info!(attempt, "the detector restarted");
-                return Ok(detector);
+                tracing::info!("the detector restarted");
+                return Ok(Some(detector));
             }
-            Err(err) => {
-                tracing::warn!(err = format!("{err:#}"), attempt, "restarting the detector")
-            }
+            Err(err) => tracing::warn!(err = format!("{err:#}"), "restarting the detector"),
         }
     }
-    bail!("the detector did not restart after {DETECTOR_RETRIES} attempts")
+}
+
+/// Recent detector deaths, for bounding restarts.
+#[derive(Debug, Default)]
+struct DeathWindow {
+    deaths: VecDeque<Instant>,
+}
+
+impl DeathWindow {
+    /// Records a death at `at`. Returns false when more than
+    /// [`MAX_DETECTOR_DEATHS`] deaths fall within the
+    /// [`DETECTOR_DEATH_WINDOW`] ending at `at`.
+    fn record(&mut self, at: Instant) -> bool {
+        while self
+            .deaths
+            .front()
+            .is_some_and(|&d| at.duration_since(d) >= DETECTOR_DEATH_WINDOW)
+        {
+            self.deaths.pop_front();
+        }
+        self.deaths.push_back(at);
+        self.deaths.len() <= MAX_DETECTOR_DEATHS
+    }
 }
 
 /// Publishes the recorder's state to the shared snapshot and `state.json`.
@@ -351,5 +421,33 @@ fn remove_file(path: &Path) {
         && err.kind() != std::io::ErrorKind::NotFound
     {
         tracing::warn!(%err, path = %path.display(), "removing a runtime file");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn death_window_allows_five_deaths_a_minute() {
+        let t0 = Instant::now();
+        let secs = Duration::from_secs;
+        let mut window = DeathWindow::default();
+        for i in 0..5 {
+            assert!(window.record(t0 + secs(i * 10)), "death {i}");
+        }
+        // The sixth within 60 s of the first is one too many.
+        assert!(!window.record(t0 + secs(59)));
+
+        let mut window = DeathWindow::default();
+        for i in 0..5 {
+            assert!(window.record(t0 + secs(i * 10)));
+        }
+        // At 60 s the first death has left the window.
+        assert!(window.record(t0 + secs(60)));
+        // Deaths spaced over a minute apart never trip it.
+        let mut window = DeathWindow::default();
+        assert!((0..100).all(|i| window.record(t0 + secs(i * 61))));
+        assert!(window.deaths.len() == 1);
     }
 }

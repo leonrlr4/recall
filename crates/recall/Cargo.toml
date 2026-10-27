@@ -21,6 +21,7 @@ tracing.workspace = true
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 notify-rust = "4"
+rustix = { version = "1", features = ["fs"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]

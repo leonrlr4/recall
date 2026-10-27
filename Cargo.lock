@@ -1827,6 +1827,7 @@ dependencies = [
  "recall-pipeline",
  "recall-server",
  "recall-store",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

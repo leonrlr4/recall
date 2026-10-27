@@ -6,6 +6,7 @@ After=pipewire.service
 ExecStart=%h/.cargo/bin/recall daemon
 Restart=on-failure
 RestartSec=2
+TimeoutStopSec=10min
 Environment=RUST_LOG=info
 
 [Install]
