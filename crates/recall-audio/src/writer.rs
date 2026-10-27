@@ -42,9 +42,12 @@ struct TrackFiles {
     /// Index of the chunk the next sample goes to.
     index: u32,
     /// The open chunk, created on the first sample pushed into it.
-    file: Option<BufWriter<File>>,
-    /// Samples already in the open chunk.
+    file: Option<BufWriter<ChunkFile>>,
+    /// Samples pushed into the open chunk, written out or still buffered.
     in_chunk: usize,
+    /// Samples a failed write lost, written as silence before the next
+    /// samples so this track stays aligned with the other one.
+    owed: u64,
 }
 
 impl TrackFiles {
@@ -60,15 +63,171 @@ impl TrackFiles {
             index,
             file: None,
             in_chunk: 0,
+            owed: 0,
         })
+    }
+
+    /// Writes the silence owed, then `samples`. On a failure, the samples
+    /// that did not reach the disk are owed and the error is returned.
+    fn push(&mut self, cache: &Path, disk: &Disk, samples: &[f32]) -> Result<()> {
+        while self.owed > 0 {
+            let take = self.owed.min(SILENCE.len() as u64) as usize;
+            self.owed -= take as u64;
+            self.write(cache, disk, &SILENCE[..take])
+                .inspect_err(|_| self.owed += samples.len() as u64)?;
+        }
+        self.write(cache, disk, samples)
+    }
+
+    fn write(&mut self, cache: &Path, disk: &Disk, mut samples: &[f32]) -> Result<()> {
+        while !samples.is_empty() {
+            let file = match &mut self.file {
+                Some(file) => file,
+                None => {
+                    let path = chunk_path(cache, self.track, self.index);
+                    match ChunkFile::create(&path, disk) {
+                        Ok(file) => self.file.insert(BufWriter::new(file)),
+                        Err(err) => {
+                            self.owed += samples.len() as u64;
+                            return Err(err);
+                        }
+                    }
+                }
+            };
+            let take = samples.len().min(CHUNK_SAMPLES - self.in_chunk);
+            let mut bytes = Vec::with_capacity(take * 4);
+            for sample in &samples[..take] {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            let written = file.write_all(&bytes);
+            self.in_chunk += take;
+            samples = &samples[take..];
+            let result = match written {
+                Ok(()) if self.in_chunk == CHUNK_SAMPLES => {
+                    let flushed = file.flush();
+                    if flushed.is_ok() {
+                        self.file = None;
+                        self.index += 1;
+                        self.in_chunk = 0;
+                    }
+                    flushed.context("flushing a full chunk")
+                }
+                Ok(()) => Ok(()),
+                Err(err) => Err(err).context("writing a chunk"),
+            };
+            if let Err(err) = result {
+                self.abandon_chunk();
+                self.owed += samples.len() as u64;
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the open chunk's buffered samples to the OS.
+    fn flush(&mut self) -> Result<()> {
+        let Some(file) = &mut self.file else {
+            return Ok(());
+        };
+        let flushed = file.flush().context("flushing a chunk");
+        if flushed.is_err() {
+            self.abandon_chunk();
+        }
+        flushed
+    }
+
+    /// After a failed write: closes the open chunk without writing its
+    /// buffer, cuts it back to whole samples, owes the samples pushed into
+    /// it that are not on disk, and moves on, so the next push opens a new
+    /// chunk instead of appending after a partial sample.
+    fn abandon_chunk(&mut self) {
+        let Some(file) = self.file.take() else {
+            return;
+        };
+        let (file, _unwritten) = file.into_parts();
+        let path = chunk_path(&PathBuf::new(), self.track, self.index);
+        let kept = match file.cut_to_whole_samples() {
+            Ok(kept) => kept,
+            Err(err) => {
+                tracing::error!(
+                    err = format!("{err:#}"),
+                    chunk = %path.display(),
+                    "cutting a chunk after a failed write"
+                );
+                0
+            }
+        };
+        self.owed += (self.in_chunk as u64).saturating_sub(kept);
+        self.index += 1;
+        self.in_chunk = 0;
+    }
+}
+
+/// Silence written in place of samples a failed write lost.
+static SILENCE: [f32; 4_800] = [0.0; 4_800];
+
+/// Test hook standing in for the free space on the disk: `None` is the real
+/// disk, `Some(bytes)` lets that many more bytes be written across all chunk
+/// files, after which writes fail as on a full disk.
+#[derive(Clone, Default)]
+struct Disk(Option<std::sync::Arc<std::sync::atomic::AtomicU64>>);
+
+/// One chunk file, writing through [`Disk`].
+struct ChunkFile {
+    file: File,
+    disk: Disk,
+}
+
+impl ChunkFile {
+    fn create(path: &Path, disk: &Disk) -> Result<Self> {
+        let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
+        Ok(Self {
+            file,
+            disk: disk.clone(),
+        })
+    }
+
+    /// Truncates the file to a multiple of 4 bytes and returns the whole
+    /// samples it holds.
+    fn cut_to_whole_samples(&self) -> std::io::Result<u64> {
+        let len = self.file.metadata()?.len();
+        let whole = len / 4 * 4;
+        if whole != len {
+            self.file.set_len(whole)?;
+        }
+        Ok(whole / 4)
+    }
+}
+
+impl Write for ChunkFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let Some(free) = &self.disk.0 else {
+            return self.file.write(buf);
+        };
+        let n = (free.load(std::sync::atomic::Ordering::SeqCst) as usize).min(buf.len());
+        if n == 0 && !buf.is_empty() {
+            return Err(std::io::Error::from_raw_os_error(28)); // ENOSPC
+        }
+        free.fetch_sub(n as u64, std::sync::atomic::Ordering::SeqCst);
+        self.file.write(&buf[..n])
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
     }
 }
 
 /// Appends captured samples to the chunk cache.
+///
+/// A failed write (a full disk) closes that track's chunk, cuts it back to
+/// whole samples and returns the error; the next push opens a new chunk and
+/// first writes silence for every sample that did not reach the disk, so
+/// both tracks keep one timeline.
 pub struct ChunkWriter {
     cache: PathBuf,
     mic: TrackFiles,
     sys: TrackFiles,
+    disk: Disk,
 }
 
 impl ChunkWriter {
@@ -80,53 +239,34 @@ impl ChunkWriter {
             cache: cache.to_path_buf(),
             mic: TrackFiles::open(cache, Track::Mic)?,
             sys: TrackFiles::open(cache, Track::Sys)?,
+            disk: Disk::default(),
         })
     }
 
-    pub fn push(&mut self, track: Track, mut samples: &[f32]) -> Result<()> {
+    /// Lets only `free` more bytes reach the chunk files; see [`Disk`].
+    #[cfg(test)]
+    pub(crate) fn with_free_space(
+        mut self,
+        free: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
+        self.disk = Disk(Some(free));
+        self
+    }
+
+    pub fn push(&mut self, track: Track, samples: &[f32]) -> Result<()> {
         let files = match track {
             Track::Mic => &mut self.mic,
             Track::Sys => &mut self.sys,
         };
-        while !samples.is_empty() {
-            let file = match &mut files.file {
-                Some(file) => file,
-                None => {
-                    let path = chunk_path(&self.cache, files.track, files.index);
-                    let file = File::create(&path)
-                        .with_context(|| format!("creating {}", path.display()))?;
-                    files.file.insert(BufWriter::new(file))
-                }
-            };
-            let take = samples.len().min(CHUNK_SAMPLES - files.in_chunk);
-            let mut bytes = Vec::with_capacity(take * 4);
-            for sample in &samples[..take] {
-                bytes.extend_from_slice(&sample.to_le_bytes());
-            }
-            file.write_all(&bytes).context("writing a chunk")?;
-            files.in_chunk += take;
-            samples = &samples[take..];
-            if files.in_chunk == CHUNK_SAMPLES {
-                // Move to the next chunk before flushing: if the flush fails,
-                // the next push must open a new file, not recreate (and
-                // truncate) this one.
-                let mut full = files.file.take().expect("chunk is open");
-                files.index += 1;
-                files.in_chunk = 0;
-                full.flush().context("flushing a full chunk")?;
-            }
-        }
-        Ok(())
+        files.push(&self.cache, &self.disk, samples)
     }
 
-    /// Writes buffered samples of both open chunks to the OS.
+    /// Writes buffered samples of both open chunks to the OS. Returns the
+    /// first error; both tracks are flushed regardless.
     pub fn flush(&mut self) -> Result<()> {
-        for files in [&mut self.mic, &mut self.sys] {
-            if let Some(file) = &mut files.file {
-                file.flush().context("flushing a chunk")?;
-            }
-        }
-        Ok(())
+        let mic = self.mic.flush();
+        let sys = self.sys.flush();
+        mic.and(sys)
     }
 }
 
@@ -326,6 +466,76 @@ mod tests {
             cache_duration(&cache).unwrap(),
             Duration::from_nanos((2 * 960_000 + 10) * 1_000_000_000 / 48_000)
         );
+    }
+
+    /// Every chunk of `track` in `cache`, read back in order.
+    fn read_track(cache: &Path, track: Track) -> Vec<f32> {
+        chunk_paths(cache, track)
+            .unwrap()
+            .iter()
+            .flat_map(|path| {
+                let bytes = std::fs::read(path).unwrap();
+                assert_eq!(
+                    bytes.len() % 4,
+                    0,
+                    "{} is not whole samples",
+                    path.display()
+                );
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn full_disk_cuts_chunks_to_whole_samples_and_keeps_tracks_aligned() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join(".cache");
+        // Room for 10 000 samples and half of one more, shared by the tracks.
+        let free = Arc::new(AtomicU64::new(40_002));
+        let mut writer = ChunkWriter::new(&cache)
+            .unwrap()
+            .with_free_space(free.clone());
+        let block = 3_000;
+        let mut errors = 0;
+        // Blocks 0..8 alternate between the tracks; the disk fills during
+        // block 2 or 3, and space comes back before block 6.
+        for i in 0..8 {
+            if i == 6 {
+                free.store(u64::MAX / 2, Ordering::SeqCst);
+            }
+            let value = i as f32 + 1.0;
+            for track in [Track::Mic, Track::Sys] {
+                if writer
+                    .push(track, &vec![value / 10.0; block])
+                    .and_then(|()| writer.flush())
+                    .is_err()
+                {
+                    errors += 1;
+                }
+            }
+        }
+        writer.flush().unwrap();
+        assert!(errors > 0, "the disk never filled");
+
+        let mic = read_track(&cache, Track::Mic);
+        let sys = read_track(&cache, Track::Sys);
+        assert_eq!(mic.len(), 8 * block);
+        assert_eq!(sys.len(), 8 * block);
+        // What was written after the disk freed up sits at its own time.
+        for samples in [&mic, &sys] {
+            assert!(samples[7 * block..].iter().all(|s| *s == 0.8));
+            assert!(samples[..block].iter().all(|s| *s == 0.1));
+        }
+        // More than one chunk per track: each failure rolled to a new file.
+        assert!(chunk_paths(&cache, Track::Mic).unwrap().len() > 1);
     }
 
     #[test]

@@ -102,17 +102,9 @@ impl Capture {
     pub fn start(writer: Arc<Mutex<ChunkWriter>>, levels: Arc<Levels>) -> Result<Capture> {
         let origin = Instant::now();
         let failure = Arc::new(Failure::default());
-        let (mic_ring, mic_out) = track_ring(Track::Mic, origin);
-        let (sys_ring, sys_out) = track_ring(Track::Sys, origin);
         let stop_writer = Arc::new(AtomicBool::new(false));
-        let writer_thread = {
-            let stop = stop_writer.clone();
-            let failure = failure.clone();
-            std::thread::Builder::new()
-                .name("recall-capture-writer".into())
-                .spawn(move || write_loop([mic_out, sys_out], &writer, &stop, &failure))
-                .context("spawning the capture writer thread")?
-        };
+        let ([mic_ring, sys_ring], writer_thread) =
+            spawn_writer(writer, origin, stop_writer.clone(), failure.clone())?;
         let wake = writer_thread.thread().clone();
         let mic = Arc::new(TrackInput::new(
             Track::Mic,
@@ -145,7 +137,8 @@ impl Capture {
     }
 
     /// False once the PipeWire connection or the writer thread has ended on
-    /// its own; [`Capture::stop`] then returns the reason.
+    /// its own, as the writer does on its first failed write (a full disk);
+    /// [`Capture::stop`] then returns the reason.
     pub fn is_running(&self) -> bool {
         let alive = |finished: Option<bool>| finished == Some(false);
         alive(self.pw_thread.as_ref().map(JoinHandle::is_finished))
@@ -351,8 +344,29 @@ fn write_silence(writer: &mut ChunkWriter, track: Track, mut samples: u64) -> Re
     Ok(())
 }
 
-/// The writer thread: drains both rings whenever woken, until asked to stop.
-/// Blocks in `park` while no audio arrives.
+/// Starts the writer thread on both tracks' rings and returns the rings'
+/// realtime ends, mic first.
+fn spawn_writer(
+    writer: Arc<Mutex<ChunkWriter>>,
+    origin: Instant,
+    stop: Arc<AtomicBool>,
+    failure: Arc<Failure>,
+) -> Result<([RingProducers; 2], JoinHandle<Result<()>>)> {
+    let (mic_ring, mic_out) = track_ring(Track::Mic, origin);
+    let (sys_ring, sys_out) = track_ring(Track::Sys, origin);
+    let thread = std::thread::Builder::new()
+        .name("recall-capture-writer".into())
+        .spawn(move || write_loop([mic_out, sys_out], &writer, &stop, &failure))
+        .context("spawning the capture writer thread")?;
+    Ok(([mic_ring, sys_ring], thread))
+}
+
+/// The writer thread: drains both rings whenever woken, until asked to stop
+/// or a write fails. Blocks in `park` while no audio arrives.
+///
+/// A failed write ends the thread (after recording the error in `failure`),
+/// which ends the capture: a full disk will not take the rest of the
+/// meeting, and stopping now keeps what reached the disk usable.
 fn write_loop(
     mut tracks: [TrackOutput; 2],
     writer: &Mutex<ChunkWriter>,
@@ -363,15 +377,17 @@ fn write_loop(
         // Read the flag before draining: a stop requested after this read
         // unparks us, so the samples queued before it are drained next round.
         let stopping = stop.load(Ordering::Acquire);
+        let mut failed = false;
         {
             let mut writer = lock(writer);
             for track in &mut tracks {
                 if let Err(err) = track.drain(&mut writer) {
                     failure.record(err.context("writing captured audio"));
+                    failed = true;
                 }
             }
         }
-        if stopping {
+        if stopping || failed {
             break;
         }
         std::thread::park();
@@ -906,6 +922,64 @@ mod tests {
             }
             assert_eq!(silence, 0, "{ppm} ppm");
         }
+    }
+
+    #[test]
+    fn write_error_ends_the_capture() {
+        use std::sync::atomic::AtomicU64;
+
+        let dir = tempfile::tempdir().unwrap();
+        let writer = ChunkWriter::new(dir.path())
+            .unwrap()
+            .with_free_space(Arc::new(AtomicU64::new(0)));
+        let origin = Instant::now();
+        let failure = Arc::new(Failure::default());
+        let stop = Arc::new(AtomicBool::new(false));
+        let ([mic_ring, _sys_ring], writer_thread) = spawn_writer(
+            Arc::new(Mutex::new(writer)),
+            origin,
+            stop.clone(),
+            failure.clone(),
+        )
+        .unwrap();
+        let mic = TrackInput::new(
+            Track::Mic,
+            mic_ring,
+            Arc::new(Levels::default()),
+            writer_thread.thread().clone(),
+        );
+        // A stand-in for the PipeWire thread that runs until the test ends.
+        let (quit, _quit_rx) = pw::channel::channel();
+        let (keep_tx, keep_rx) = mpsc::channel::<()>();
+        let capture = Capture {
+            quit,
+            pw_thread: Some(std::thread::spawn(move || {
+                let _ = keep_rx.recv_timeout(Duration::from_secs(10));
+            })),
+            writer_thread: Some(writer_thread),
+            stop_writer: stop,
+            failure,
+        };
+        assert!(capture.is_running());
+
+        // One second: more than the chunk's write buffer, so it reaches
+        // the (full) disk at once.
+        mic.push(
+            &as_bytes(&vec![0.5; 48_000]),
+            1,
+            origin + samples_to_duration(48_000),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while capture.is_running() {
+            assert!(Instant::now() < deadline, "the capture kept running");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(keep_tx);
+        let err = capture.stop().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("writing captured audio"),
+            "{err:#}"
+        );
     }
 
     #[test]
