@@ -1,6 +1,6 @@
 //! Meeting summaries and questions about a transcript, through an [`Llm`].
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use recall_llm::{Llm, ask_prompt, parse_summary, summary_prompt, transcript_text};
 use recall_store::{Segment, Side, Speakers, Summary};
 use tokio::sync::mpsc;
@@ -46,14 +46,11 @@ pub async fn summarize(
         parse_summary(&llm.complete(&system, &text).await?)?
     } else {
         let mut parts = Vec::new();
-        for chunk in chunks(&text, max_chars) {
-            parts.push(parse_summary(&llm.complete(&system, &chunk).await?)?);
+        for (n, chunk) in chunks(&text, max_chars).iter().enumerate() {
+            let raw = llm.complete(&system, chunk).await?;
+            parts.push(parse_summary(&raw).with_context(|| format!("summary of part {}", n + 1))?);
         }
-        let user = format!(
-            "Merge these summaries of consecutive parts of one meeting into one summary \
-             with the same JSON keys:\n{}",
-            serde_json::to_string(&parts)?
-        );
+        let user = serde_json::to_string(&parts)?;
         parse_summary(&llm.complete(&merge_prompt(lang), &user).await?)?
     };
     let end_ms = segments.iter().map(|s| s.end_ms).max().unwrap_or(0);
@@ -271,6 +268,8 @@ mod tests {
         let parts = ["Part 0.", "Part 2.", "Part 4."];
         let at: Vec<usize> = parts.iter().map(|p| user.find(p).unwrap()).collect();
         assert!(at.is_sorted(), "parts in meeting order: {user}");
+        let merged: Vec<serde_json::Value> = serde_json::from_str(user).unwrap();
+        assert_eq!(merged.len(), 3, "the user message is the JSON array alone");
     }
 
     #[tokio::test]
@@ -301,6 +300,29 @@ mod tests {
             format!("{err:#}").contains("Sorry, I cannot summarize this meeting."),
             "{err:#}"
         );
+    }
+
+    #[tokio::test]
+    async fn summarize_names_the_part_whose_summary_is_bad() {
+        let speakers = Speakers::default();
+        let segments: Vec<Segment> = (0..3)
+            .map(|i| line(i * 1_000, i * 1_000 + 900, Side::Me, "me", &"x".repeat(80)))
+            .collect();
+        let llm = FakeLlm::new(|_, user| {
+            if user.starts_with("[00:01]") {
+                "not a summary".into()
+            } else {
+                SUMMARY.into()
+            }
+        });
+
+        let err = summarize(&llm, &segments, &speakers, "en", 100)
+            .await
+            .unwrap_err();
+
+        let text = format!("{err:#}");
+        assert!(text.starts_with("summary of part 2: "), "{text}");
+        assert!(text.contains("not a summary"), "{text}");
     }
 
     #[tokio::test]

@@ -122,10 +122,10 @@ fn nearest_turn(segment: &Segment, turns: &[Turn]) -> Option<usize> {
 
 /// Sets each cluster's speaker to the known person whose voice is most like
 /// its embedding, when the cosine similarity reaches `threshold`. Clusters
-/// with no such person are left as they are. A remote voice never matches
+/// with no such person, or with an empty embedding, are left as they are. A remote voice never matches
 /// `me`.
 pub fn name_clusters(clusters: &mut [Cluster], speakers: &Speakers, threshold: f32) {
-    for cluster in clusters {
+    for cluster in clusters.iter_mut().filter(|c| !c.embedding.is_empty()) {
         let embedding = &cluster.embedding;
         let best = speakers
             .people()
@@ -266,6 +266,10 @@ mod tests {
         assert_eq!(clusters[0].speaker, Some(tom));
         assert_eq!(clusters[1].speaker, None);
         assert_eq!(clusters[2].speaker, None);
+        assert_eq!(clusters[3].speaker, None);
+
+        // Even a threshold every voice passes never names an empty embedding.
+        name_clusters(&mut clusters[3..], &speakers, 0.0);
         assert_eq!(clusters[3].speaker, None);
     }
 
