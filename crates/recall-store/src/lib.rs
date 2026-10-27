@@ -12,7 +12,7 @@ pub mod speakers;
 pub use config::{Config, LlmConfig, SttConfig};
 pub use dir::{MeetingDir, sanitize_title};
 pub use events::Event;
-pub use index::{Hit, Index, Job, ListFilter, MeetingRow, state_of};
+pub use index::{Hit, Index, Job, ListFilter, MeetingRow, RebuildReport, state_of};
 pub use meeting::{
     ActionItem, Chapter, Cluster, Meeting, MeetingId, Segment, Side, SpeakerId, Step, StepState,
     Summary,

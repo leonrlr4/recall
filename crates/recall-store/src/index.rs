@@ -91,6 +91,16 @@ pub struct Job {
     pub attempts: u32,
 }
 
+/// Outcome of [`Index::rebuild`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RebuildReport {
+    /// Meetings now in the index.
+    pub indexed: usize,
+    /// Meetings whose `meeting.json` could not be read or parsed, with the
+    /// error.
+    pub failed: Vec<(MeetingId, String)>,
+}
+
 /// Conditions for [`Index::list`]; every set field must hold.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ListFilter {
@@ -372,29 +382,35 @@ impl Index {
         Ok(hits)
     }
 
-    /// Replaces `meetings` and `segments` with what is on disk under `root`
-    /// and returns the number of meetings indexed. Each meeting is indexed
-    /// under its directory name, whatever id its `meeting.json` holds.
-    /// Directories whose `meeting.json` does not parse are skipped.
-    pub fn rebuild(&self, root: &Path, speakers: &Speakers) -> Result<usize> {
+    /// Replaces `meetings` and `segments` with what is on disk under `root`.
+    /// Each meeting is indexed under its directory name, whatever id its
+    /// `meeting.json` holds. A directory whose `meeting.json` has vanished
+    /// since listing is skipped; one that cannot be read or parsed is left
+    /// out of the index and reported in [`RebuildReport::failed`].
+    pub fn rebuild(&self, root: &Path, speakers: &Speakers) -> Result<RebuildReport> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM meetings", [])?;
         tx.execute("DELETE FROM segments", [])?;
-        let mut count = 0;
+        let mut report = RebuildReport::default();
         for id in MeetingDir::list(root)? {
             let dir = MeetingDir {
                 root: root.to_path_buf(),
                 id,
             };
-            let Ok(mut meeting) = Meeting::load(&dir.path()) else {
-                continue;
+            let mut meeting = match Meeting::load(&dir.path()) {
+                Ok(meeting) => meeting,
+                Err(_) if !dir.path().join("meeting.json").exists() => continue,
+                Err(e) => {
+                    report.failed.push((dir.id, format!("{e:#}")));
+                    continue;
+                }
             };
             meeting.id = dir.id.clone();
             upsert_on(&tx, &meeting, speakers, dir.audio().exists())?;
-            count += 1;
+            report.indexed += 1;
         }
         tx.commit()?;
-        Ok(count)
+        Ok(report)
     }
 
     /// Queues processing of `meeting` from step `from`; returns the job id.
@@ -685,7 +701,9 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(index.rebuild(root.path(), &speakers).unwrap(), 3);
+        let report = index.rebuild(root.path(), &speakers).unwrap();
+        assert_eq!(report.indexed, 3);
+        assert!(report.failed.is_empty());
         let rows = index.list(&ListFilter::default()).unwrap();
         assert_eq!(
             ids(&rows),
@@ -698,6 +716,31 @@ mod tests {
         assert!(rows.iter().all(|r| r.state == "recording"));
         assert_eq!(index.search("searchable", 10).unwrap().len(), 3);
         assert_eq!(index.search("searchable", 2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rebuild_reports_corrupt_meeting_json() {
+        let (_dir, index) = open();
+        let root = tempfile::tempdir().unwrap();
+        let started = Local.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap();
+        let good = MeetingDir::create(root.path(), started, "Good").unwrap();
+        meeting(&good.id.0, None, &["fine"])
+            .save(&good.path())
+            .unwrap();
+        let bad = MeetingDir::create(root.path(), started, "Bad").unwrap();
+        std::fs::write(bad.path().join("meeting.json"), "{").unwrap();
+
+        let report = index.rebuild(root.path(), &Speakers::default()).unwrap();
+        assert_eq!(report.indexed, 1);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].0, bad.id);
+        assert!(
+            report.failed[0].1.contains("parsing"),
+            "{}",
+            report.failed[0].1
+        );
+        let rows = index.list(&ListFilter::default()).unwrap();
+        assert_eq!(ids(&rows), [good.id.0.as_str()]);
     }
 
     #[test]

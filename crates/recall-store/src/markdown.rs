@@ -53,7 +53,7 @@ pub fn render(meeting: &Meeting, speakers: &Speakers, lang: &str) -> String {
         if !summary.decisions.is_empty() {
             let _ = write!(out, "\n## {}\n\n", labels.decisions);
             for decision in &summary.decisions {
-                let _ = writeln!(out, "- {decision}");
+                let _ = writeln!(out, "- {}", flatten(decision));
             }
         }
         if !summary.actions.is_empty() {
@@ -65,7 +65,12 @@ pub fn render(meeting: &Meeting, speakers: &Speakers, lang: &str) -> String {
         if !summary.chapters.is_empty() {
             let _ = write!(out, "\n## {}\n\n", labels.chapters);
             for chapter in &summary.chapters {
-                let _ = writeln!(out, "- [{}] {}", clock(chapter.start_ms), chapter.title);
+                let _ = writeln!(
+                    out,
+                    "- [{}] {}",
+                    clock(chapter.start_ms),
+                    flatten(&chapter.title)
+                );
             }
         }
     }
@@ -78,7 +83,7 @@ pub fn render(meeting: &Meeting, speakers: &Speakers, lang: &str) -> String {
             "[{}] **{}** {}",
             clock(segment.start_ms),
             name,
-            segment.text.trim()
+            flatten(segment.text.trim())
         );
     }
     out
@@ -112,9 +117,13 @@ fn action_line(action: &ActionItem) -> String {
         .flatten()
         .collect();
     if extras.is_empty() {
-        format!("- [ ] {}", action.text)
+        format!("- [ ] {}", flatten(&action.text))
     } else {
-        format!("- [ ] {} ({})", action.text, extras.join(", "))
+        format!(
+            "- [ ] {} ({})",
+            flatten(&action.text),
+            flatten(&extras.join(", "))
+        )
     }
 }
 
@@ -126,6 +135,12 @@ pub(crate) fn segment_speaker(segment: &Segment, speakers: &Speakers, them: &str
         (None, Side::Me) => speakers.me().name.clone(),
         (None, Side::Them) => them.to_string(),
     }
+}
+
+/// `s` on one line: each `\r\n`, `\n` or `\r` becomes a space, so a
+/// multi-line value cannot end its list item or transcript line.
+fn flatten(s: &str) -> String {
+    s.replace("\r\n", " ").replace(['\n', '\r'], " ")
 }
 
 /// `mm:ss`, or `h:mm:ss` from one hour on.
@@ -309,6 +324,22 @@ tags: []
         }
         assert!(md.contains("[01:36] **Them** 嗯"));
         assert!(!md.contains("## 摘要"));
+
+        let (mut multi, _) = sample();
+        let summary = multi.summary.as_mut().unwrap();
+        summary.decisions[0] = "a\r\nb\nc\rd".into();
+        summary.actions[3].text = "x\ny".into();
+        summary.chapters[0].title = "p\r\nq".into();
+        multi.segments[0].text = "line one\nline two".into();
+        let md = render(&multi, &speakers, "en");
+        for line in [
+            "- a b c d\n",
+            "- [ ] x y\n",
+            "- [01:32] p q\n",
+            "**Me** line one line two\n",
+        ] {
+            assert!(md.contains(line), "missing {line:?} in {md}");
+        }
     }
 
     #[test]
