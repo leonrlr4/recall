@@ -42,7 +42,9 @@ pub struct StatusSnapshot {
     /// (e.g. `"signal_lost"`); `None` outside a recording.
     #[serde(default)]
     pub meet: Option<String>,
-    /// The screen recording's state during this recording.
+    /// The screen recording's state: `"recording"`, `"off"` or `"error"`
+    /// during a recording; `"picker"` outside one when screen recording is
+    /// on and the next one will show the portal's picker.
     #[serde(default)]
     pub screen: Option<String>,
 }
@@ -54,6 +56,8 @@ pub enum ControlCommand {
     Start,
     Stop,
     Discard,
+    /// Stop the live recording's screen recorder and delete its video.
+    ScreenOff,
 }
 
 /// Peak levels per 100 ms window of a short test recording.

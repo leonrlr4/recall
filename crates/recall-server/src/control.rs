@@ -17,7 +17,7 @@ pub async fn status(State(state): State<AppState>) -> Json<StatusSnapshot> {
     Json(state.status.read().expect("status lock poisoned").clone())
 }
 
-/// `POST /api/record/{start|stop|discard}`.
+/// `POST /api/record/{start|stop|discard|screen_off}`.
 pub async fn record(
     State(state): State<AppState>,
     Path(action): Path<String>,

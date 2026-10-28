@@ -5,12 +5,17 @@
 //! `{"command":"status"}` answers `{"reply":"status","phase":"recording",...}`;
 //! the other commands answer `{"reply":"ok"}`, or `{"reply":"error",...}` when
 //! the recorder is gone or the line does not parse.
+//!
+//! The record commands reach the recorder thread as [`DetectEvent`]s;
+//! `screen_off` is not a session event and goes through a flag the recorder
+//! checks every tick (see [`RecorderLink`]).
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError, RwLock, mpsc};
 
 use anyhow::{Context, Result, anyhow};
@@ -29,18 +34,45 @@ pub enum Command {
     Start,
     Stop,
     Discard,
+    /// Stop the live recording's screen recorder and delete its video.
+    ScreenOff,
     Status,
 }
 
 impl Command {
-    /// The recorder event this command sends; `None` for [`Command::Status`].
+    /// The recorder event this command sends; `None` for
+    /// [`Command::ScreenOff`] and [`Command::Status`].
     pub fn event(self) -> Option<DetectEvent> {
         match self {
             Command::Start => Some(DetectEvent::HotkeyStart),
             Command::Stop => Some(DetectEvent::HotkeyStop),
             Command::Discard => Some(DetectEvent::HotkeyDiscard),
-            Command::Status => None,
+            Command::ScreenOff | Command::Status => None,
         }
+    }
+}
+
+/// How commands reach the recorder thread: session events through its
+/// channel, and the screen-off request through a flag it takes within a
+/// tick.
+#[derive(Clone)]
+pub struct RecorderLink {
+    pub events: mpsc::Sender<DetectEvent>,
+    pub screen_off: Arc<AtomicBool>,
+}
+
+impl RecorderLink {
+    /// Carries out every command but [`Command::Status`], which is a no-op
+    /// here. Errors when the recorder thread has stopped.
+    pub fn send(&self, cmd: Command) -> Result<()> {
+        if let Some(event) = cmd.event() {
+            self.events
+                .send(event)
+                .map_err(|_| anyhow!("the recorder has stopped"))?;
+        } else if cmd == Command::ScreenOff {
+            self.screen_off.store(true, Ordering::Release);
+        }
+        Ok(())
     }
 }
 
@@ -50,6 +82,7 @@ impl From<ControlCommand> for Command {
             ControlCommand::Start => Command::Start,
             ControlCommand::Stop => Command::Stop,
             ControlCommand::Discard => Command::Discard,
+            ControlCommand::ScreenOff => Command::ScreenOff,
         }
     }
 }
@@ -96,7 +129,7 @@ pub fn socket_path() -> PathBuf {
 /// did not exit cleanly.
 pub async fn serve(
     path: &Path,
-    tx: mpsc::Sender<DetectEvent>,
+    link: RecorderLink,
     status: Arc<RwLock<StatusSnapshot>>,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -112,10 +145,10 @@ pub async fn serve(
         UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
     loop {
         let (stream, _) = listener.accept().await.context("accepting a client")?;
-        let tx = tx.clone();
+        let link = link.clone();
         let status = status.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle(stream, tx, status).await {
+            if let Err(err) = handle(stream, link, status).await {
                 tracing::warn!(err = format!("{err:#}"), "control client");
             }
         });
@@ -124,14 +157,14 @@ pub async fn serve(
 
 async fn handle(
     stream: tokio::net::UnixStream,
-    tx: mpsc::Sender<DetectEvent>,
+    link: RecorderLink,
     status: Arc<RwLock<StatusSnapshot>>,
 ) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = tokio::io::BufReader::new(read).lines();
     while let Some(line) = lines.next_line().await? {
         let reply = match serde_json::from_str::<Command>(&line) {
-            Ok(cmd) => answer(cmd, &tx, &status),
+            Ok(cmd) => answer(cmd, &link, &status),
             Err(err) => Reply::Error {
                 message: format!("bad command: {err}"),
             },
@@ -143,19 +176,19 @@ async fn handle(
     Ok(())
 }
 
-fn answer(cmd: Command, tx: &mpsc::Sender<DetectEvent>, status: &RwLock<StatusSnapshot>) -> Reply {
-    match cmd.event() {
-        None => Reply::Status(
+fn answer(cmd: Command, link: &RecorderLink, status: &RwLock<StatusSnapshot>) -> Reply {
+    if cmd == Command::Status {
+        return Reply::Status(
             status
                 .read()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone(),
-        ),
-        Some(event) => match tx.send(event) {
-            Ok(()) => Reply::Ok,
-            Err(_) => Reply::Error {
-                message: "the recorder has stopped".into(),
-            },
+        );
+    }
+    match link.send(cmd) {
+        Ok(()) => Reply::Ok,
+        Err(err) => Reply::Error {
+            message: err.to_string(),
         },
     }
 }
@@ -207,10 +240,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recall/control.sock");
         let (tx, rx) = mpsc::channel();
+        let link = RecorderLink {
+            events: tx,
+            screen_off: Arc::default(),
+        };
+        let screen_off = link.screen_off.clone();
         let status = Arc::new(RwLock::new(snapshot()));
         let server = {
             let path = path.clone();
-            tokio::spawn(async move { serve(&path, tx, status).await })
+            tokio::spawn(async move { serve(&path, link, status).await })
         };
         while !path.exists() {
             assert!(!server.is_finished(), "serve exited early");
@@ -223,6 +261,7 @@ mod tests {
                 Command::Start,
                 Command::Stop,
                 Command::Discard,
+                Command::ScreenOff,
             ]
             .map(|cmd| send_to(&path, cmd).unwrap())
         })
@@ -231,8 +270,15 @@ mod tests {
 
         assert_eq!(
             replies,
-            [Reply::Status(snapshot()), Reply::Ok, Reply::Ok, Reply::Ok]
+            [
+                Reply::Status(snapshot()),
+                Reply::Ok,
+                Reply::Ok,
+                Reply::Ok,
+                Reply::Ok
+            ]
         );
+        assert!(screen_off.load(Ordering::Acquire));
         let events: Vec<DetectEvent> = rx.try_iter().collect();
         assert_eq!(
             events,
@@ -252,6 +298,10 @@ mod tests {
             r#"{"command":"status"}"#
         );
         assert_eq!(
+            serde_json::to_string(&Command::ScreenOff).unwrap(),
+            r#"{"command":"screen_off"}"#
+        );
+        assert_eq!(
             serde_json::to_string(&Reply::Ok).unwrap(),
             r#"{"reply":"ok"}"#
         );
@@ -264,9 +314,13 @@ mod tests {
     #[tokio::test]
     async fn malformed_line_gets_an_error_reply() {
         let (tx, _rx) = mpsc::channel();
+        let link = RecorderLink {
+            events: tx,
+            screen_off: Arc::default(),
+        };
         let status = Arc::new(RwLock::new(snapshot()));
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
-        tokio::spawn(handle(server, tx, status));
+        tokio::spawn(handle(server, link, status));
         let (read, mut write) = client.into_split();
         write.write_all(b"{\"command\":\"jump\"}\n").await.unwrap();
         let line = tokio::io::BufReader::new(read)

@@ -604,6 +604,12 @@ async fn status_record_and_selftest() {
         .await
         .unwrap();
     assert_eq!(start.status(), 204);
+    let screen_off = client
+        .post(h.url("/api/record/screen_off"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(screen_off.status(), 204);
     let bad = client
         .post(h.url("/api/record/pause"))
         .send()

@@ -37,6 +37,15 @@ pub fn failed(title: &str, what: &str) {
     show("recall failed", &format!("{title}: {what} failed"), None);
 }
 
+/// The screen recording failed to start or stopped early; the audio goes on.
+pub fn screen_failed(reason: &str) {
+    show(
+        "Screen recording stopped",
+        &format!("Audio is still recording. {reason}"),
+        None,
+    );
+}
+
 /// Shown when a recording starts with little free space in `dir`.
 pub fn low_space(dir: &Path, free_bytes: u64) {
     show(

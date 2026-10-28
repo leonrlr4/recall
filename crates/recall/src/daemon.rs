@@ -31,7 +31,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
-use crate::control;
+use crate::control::{self, RecorderLink};
 use crate::meet_sink::{LiveSlot, MeetSink, Seen};
 use crate::notify;
 use crate::recorder::Recorder;
@@ -116,6 +116,10 @@ pub async fn run(config: Config) -> Result<()> {
     .spawn(woken)?;
 
     let (tx, rx) = mpsc::channel();
+    let link = RecorderLink {
+        events: tx.clone(),
+        screen_off: Arc::new(AtomicBool::new(false)),
+    };
     let shutdown = Arc::new(AtomicBool::new(false));
     let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
     let recorder_thread = {
@@ -125,14 +129,25 @@ pub async fn run(config: Config) -> Result<()> {
         let tx = tx.clone();
         let status = status.clone();
         let live = live.clone();
+        let screen_off = link.screen_off.clone();
         let shutdown = shutdown.clone();
         let events = events.clone();
         std::thread::Builder::new()
             .name("recall-recorder".into())
             .spawn(move || {
                 let reporter = StatusReporter::new(&status, &live);
-                let result =
-                    recorder_loop(&config, recorder, &rx, &tx, reporter, &events, &shutdown);
+                let result = recorder_loop(
+                    &config,
+                    recorder,
+                    Inbox {
+                        rx: &rx,
+                        tx: &tx,
+                        screen_off: &screen_off,
+                    },
+                    reporter,
+                    &events,
+                    &shutdown,
+                );
                 let _ = done_tx.send(result);
             })
             .context("spawning the recorder thread")?
@@ -147,14 +162,8 @@ pub async fn run(config: Config) -> Result<()> {
         llm: recall_llm::from_config_or_unavailable(&config.llm),
         status: status.clone(),
         control: {
-            let tx = tx.clone();
-            Arc::new(move |cmd: ControlCommand| {
-                let event = control::Command::from(cmd)
-                    .event()
-                    .expect("record commands map to events");
-                tx.send(event)
-                    .map_err(|_| anyhow!("the recorder has stopped"))
-            })
+            let link = link.clone();
+            Arc::new(move |cmd: ControlCommand| link.send(control::Command::from(cmd)))
         },
         selftest: Arc::new(selftest::run),
         rerun: {
@@ -186,7 +195,7 @@ pub async fn run(config: Config) -> Result<()> {
     let mut control_server = {
         let socket = socket.clone();
         let status = status.clone();
-        tokio::spawn(async move { control::serve(&socket, tx, status).await })
+        tokio::spawn(async move { control::serve(&socket, link, status).await })
     };
 
     let mut sigterm = signal(SignalKind::terminate()).context("listening for SIGTERM")?;
@@ -260,15 +269,24 @@ fn lock_daemon() -> Result<std::fs::File> {
     }
 }
 
+/// What reaches the recorder thread: detector and control events on `rx`
+/// (`tx` is its sender, for restarted detectors), and the screen-off
+/// request.
+struct Inbox<'a> {
+    rx: &'a Receiver<DetectEvent>,
+    tx: &'a Sender<DetectEvent>,
+    screen_off: &'a AtomicBool,
+}
+
 /// Feeds detector, control and tick events to the session and carries out
-/// its actions until `shutdown` is set. On shutdown a recording in progress
-/// is kept and a cache still being armed is dropped. When the detector dies
-/// too often, the loop stops the same way and then returns an error.
+/// its actions until `shutdown` is set, and turns the screen recording off
+/// within a tick of a request. On shutdown a recording in progress is kept
+/// and a cache still being armed is dropped. When the detector dies too
+/// often, the loop stops the same way and then returns an error.
 fn recorder_loop(
     config: &Config,
     mut recorder: Recorder,
-    rx: &Receiver<DetectEvent>,
-    tx: &Sender<DetectEvent>,
+    inbox: Inbox,
     mut reporter: StatusReporter,
     events: &broadcast::Sender<Event>,
     shutdown: &AtomicBool,
@@ -278,6 +296,7 @@ fn recorder_loop(
         Duration::from_secs(config.debounce_secs),
         Duration::from_secs(config.end_grace_secs),
     );
+    let Inbox { rx, tx, screen_off } = inbox;
     let mut deaths = DeathWindow::default();
     let mut detector = match Detector::spawn(tx.clone(), OWN_APP_NAME) {
         Ok(detector) => Some(detector),
@@ -318,6 +337,7 @@ fn recorder_loop(
                 DetectEvent::Tick(now),
             );
             recorder.poll_keeps(now);
+            recorder.poll_screen();
             if recorder.capture_failed() {
                 tracing::error!("the capture stopped on its own; ending the recording");
                 notify::failed(recorder.source_app().unwrap_or("recall"), "recording audio");
@@ -329,6 +349,9 @@ fn recorder_loop(
                     DetectEvent::HotkeyStop,
                 );
             }
+        }
+        if screen_off.swap(false, Ordering::AcqRel) {
+            recorder.screen_off();
         }
         reporter.update(&session, &recorder);
     }
@@ -525,7 +548,7 @@ impl<'a> StatusReporter<'a> {
             mic_peak,
             sys_peak,
             meet: None,
-            screen: None,
+            screen: recorder.screen_status().map(str::to_owned),
         });
     }
 
@@ -571,18 +594,16 @@ impl<'a> StatusReporter<'a> {
     }
 }
 
-/// Copies into the recorder's `snapshot` the fields others write to the
-/// shared one: `meet` (set by the Meet sink, kept only while recording, so
-/// it clears when a recording ends) and `screen`. The caller holds the write
-/// lock across this and the store, so neither writer loses the other's
-/// update.
+/// Copies into the recorder's `snapshot` the field the Meet sink writes to
+/// the shared one: `meet`, kept only while recording, so it clears when a
+/// recording ends. The caller holds the write lock across this and the
+/// store, so neither writer loses the other's update.
 fn carry_shared(snapshot: &mut StatusSnapshot, shared: &StatusSnapshot) {
     snapshot.meet = if snapshot.phase == "recording" {
         shared.meet.clone()
     } else {
         None
     };
-    snapshot.screen = shared.screen.clone();
 }
 
 fn unix_ms(t: DateTime<Local>) -> u64 {
@@ -615,12 +636,13 @@ mod tests {
         let mut next = StatusSnapshot {
             mic_peak: 0.5,
             meet: None,
-            screen: None,
+            screen: Some("error".into()),
             ..shared.clone()
         };
         carry_shared(&mut next, &shared);
         assert_eq!(next.meet.as_deref(), Some("signal_lost"));
-        assert_eq!(next.screen.as_deref(), Some("recording"));
+        // The recorder owns `screen`.
+        assert_eq!(next.screen.as_deref(), Some("error"));
 
         for phase in ["finishing", "idle", "armed"] {
             let mut next = StatusSnapshot {

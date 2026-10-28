@@ -42,6 +42,11 @@ enum Cmd {
     Discard,
     /// Print the recorder's status as one line of JSON.
     Status,
+    /// Control the screen recording of the current meeting.
+    Screen {
+        #[command(subcommand)]
+        command: ScreenCmd,
+    },
     /// List meetings, newest first: id, length, state and summary line.
     List,
     /// Print a meeting's notes (meeting.md).
@@ -79,6 +84,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ScreenCmd {
+    /// Stop recording the screen and delete this meeting's video.
+    Off,
 }
 
 #[derive(Subcommand)]
@@ -145,6 +156,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Stop => Command::Stop,
         Cmd::Discard => Command::Discard,
         Cmd::Status => Command::Status,
+        Cmd::Screen {
+            command: ScreenCmd::Off,
+        } => Command::ScreenOff,
         Cmd::List => return list(&Config::load()?),
         Cmd::Show { id } => return show(&Config::load()?, &id),
         Cmd::Rerun { id, step } => return rerun(&Config::load()?, &id, &step),

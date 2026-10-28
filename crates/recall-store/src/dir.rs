@@ -143,14 +143,17 @@ impl MeetingDir {
         self.cache().join(CLOCK)
     }
 
-    /// True when `.cache/` holds at least one `*.f32` capture chunk.
+    /// True when `.cache/` holds at least one `*.f32` capture chunk, or a
+    /// `screen.mkv` not yet remuxed into `screen.mp4`.
     pub fn has_unfinished_cache(&self) -> bool {
         let Ok(entries) = fs::read_dir(self.cache()) else {
             return false;
         };
-        entries
-            .flatten()
-            .any(|e| e.path().extension().is_some_and(|ext| ext == CACHE_EXT))
+        entries.flatten().any(|e| {
+            let path = e.path();
+            path.extension().is_some_and(|ext| ext == CACHE_EXT)
+                || path.file_name().is_some_and(|name| name == SCREEN_CACHE)
+        })
     }
 
     /// Removes `.cache/` and everything in it. An absent cache is not an error.
@@ -414,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_is_unfinished_only_with_f32_files() {
+    fn cache_is_unfinished_with_f32_files_or_a_screen_video() {
         let root = tempfile::tempdir().unwrap();
         let dir = MeetingDir::create(root.path(), at(14, 30), "Sync").unwrap();
         assert!(!dir.has_unfinished_cache());
@@ -422,6 +425,9 @@ mod tests {
         fs::write(dir.cache().join("notes.txt"), "").unwrap();
         assert!(!dir.has_unfinished_cache());
         fs::write(dir.cache().join("mic.f32"), [0u8; 4]).unwrap();
+        assert!(dir.has_unfinished_cache());
+        fs::remove_file(dir.cache().join("mic.f32")).unwrap();
+        fs::write(dir.screen_cache(), b"mkv").unwrap();
         assert!(dir.has_unfinished_cache());
         dir.clear_cache().unwrap();
         assert!(!dir.cache().exists());
