@@ -251,6 +251,8 @@
       const t = now();
       for (const e of fallback ? glow.current(t) : namer.current(t)) queue.push(e);
       if (roster.length > 0) queue.push({ t, kind: "roster", names: roster });
+      if (fallback) queue.push({ t, kind: "status", status: "hook_failed" });
+      else if (signalLost) queue.push({ t, kind: "status", status: "signal_lost" });
     };
     const flush = () => {
       const code = meetingCode(pathname());

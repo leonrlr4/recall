@@ -133,6 +133,44 @@ describe('startContent', () => {
     ]);
   });
 
+  it('re-emits hook_failed every 30 s while in the glow fallback', () => {
+    loadFixture('grid');
+    document.documentElement.dataset.recallHook = 'failed';
+    start();
+    // Long after the first hook_failed left the 60 s window.
+    vi.advanceTimersByTime(122_000);
+
+    const last = sent[sent.length - 1].events.filter((e) => e.kind === 'status');
+    expect(last).toEqual([
+      { t: 1_090_000, kind: 'status', status: 'hook_failed' },
+      { t: 1_120_000, kind: 'status', status: 'hook_failed' },
+    ]);
+  });
+
+  it('re-emits signal_lost every 30 s while the signal stays lost, and not after it returns', () => {
+    loadFixture('grid');
+    start();
+    for (let i = 0; i < 400; i++) {
+      fromHook({ kind: 'audio' });
+      vi.advanceTimersByTime(1000);
+    }
+    const lost = (batch: BatchMessage) =>
+      batch.events.filter((e) => e.kind === 'status' && e.status === 'signal_lost').map((e) => e.t);
+    // Lost at 1_300_000; refreshes at 1_330_000, 1_360_000 and 1_390_000.
+    expect(lost(sent[sent.length - 1])).toEqual([1_360_000, 1_390_000]);
+
+    fromHook({ kind: 'speaking_start', participant: 'csrc:1' });
+    vi.advanceTimersByTime(61_000);
+    expect(lost(sent[sent.length - 1])).toEqual([]);
+  });
+
+  it('re-emits no status while all is well', () => {
+    loadFixture('grid');
+    start();
+    vi.advanceTimersByTime(121_000);
+    expect(statuses()).toEqual([]);
+  });
+
   it('sends integer t from a fractional clock', () => {
     loadFixture('speaking');
     stop = startContent({

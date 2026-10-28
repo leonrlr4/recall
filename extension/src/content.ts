@@ -13,11 +13,12 @@ export const SAMPLE_MS = 200;
 export const ROSTER_MS = 10_000;
 export const BATCH_MS = 2_000;
 /**
- * Period for re-emitting every known name and the roster with a fresh `t`.
- * Changes alone would reach only a recording that is live within the 60 s
- * resend window; a recording that starts late or restarts mid-call learns
- * every name from the next refresh. It must stay below RESEND_WINDOW_MS, and
- * the `t` must be fresh because the daemon drops exact resends.
+ * Period for re-emitting every known name, the roster, and a non-ok status
+ * (`hook_failed`, `signal_lost`) with a fresh `t`. Changes alone would reach
+ * only a recording that is live within the 60 s resend window; a recording
+ * that starts late or restarts mid-call learns them from the next refresh.
+ * It must stay below RESEND_WINDOW_MS, and the `t` must be fresh because the
+ * daemon drops exact resends.
  */
 export const REFRESH_MS = 30_000;
 /** With remote audio present, this long without a speaking event means the CSRC signal is lost. */
@@ -125,6 +126,8 @@ export function startContent({ win, doc, pathname, send, now: clock }: ContentDe
     const t = now();
     for (const e of fallback ? glow.current(t) : namer.current(t)) queue.push(e);
     if (roster.length > 0) queue.push({ t, kind: 'roster', names: roster });
+    if (fallback) queue.push({ t, kind: 'status', status: 'hook_failed' });
+    else if (signalLost) queue.push({ t, kind: 'status', status: 'signal_lost' });
   };
 
   const flush = () => {
