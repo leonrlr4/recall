@@ -27,6 +27,19 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # rust-cache restores target/ build-script state but not
+      # target/sherpa-onnx-prebuilt/, so sherpa-onnx-sys would skip its
+      # download on a warm cache and linking would fail. Fetch the libraries
+      # outside target/ and point both build scripts at them instead. The
+      # version must match the sherpa-onnx pin in crates/recall-pipeline.
+      - name: Fetch sherpa-onnx shared libraries
+        env:
+          SHERPA: sherpa-onnx-v2.0.1-linux-x64-shared-lib
+        run: |
+          curl -fsSL "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/$SHERPA.tar.bz2" \
+            | tar -xj -C "$RUNNER_TEMP"
+          echo "SHERPA_ONNX_LIB_DIR=$RUNNER_TEMP/$SHERPA/lib" >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo fmt
