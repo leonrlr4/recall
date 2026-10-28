@@ -511,6 +511,47 @@ async fn every_tool_round_trips() {
 }
 
 #[tokio::test]
+async fn name_speaker_merges_into_a_person_with_that_name() {
+    let h = harness().await;
+    let (by_name, by_alias) = {
+        let mut speakers = h.state.speakers.lock().unwrap();
+        // Folding a person named Ally into Alice makes "Ally" her alias.
+        let ally = speakers.add("Ally", None);
+        speakers.merge(&h.alice, &ally).unwrap();
+        (
+            speakers.add_unnamed("Speaker 2", Some(vec![0.0, 1.0])),
+            speakers.add_unnamed("Speaker 3", Some(vec![0.5, 0.5])),
+        )
+    };
+
+    for (voice, name) in [(&by_name, " alice "), (&by_alias, "ALLY")] {
+        let named = call(
+            &h.client,
+            "name_speaker",
+            json!({ "person_id": voice.0, "name": name }),
+        )
+        .await;
+        assert!(!is_error(&named), "{named:?}");
+        assert!(text(&named, 0).contains(&h.alice.0), "{named:?}");
+    }
+
+    let speakers = h.state.speakers.lock().unwrap();
+    assert!(speakers.get(&by_name).is_none());
+    assert!(speakers.get(&by_alias).is_none());
+    let alice = speakers.get(&h.alice).unwrap();
+    assert_eq!(alice.name, "Alice");
+    assert_eq!(alice.embeddings.len(), 3);
+    assert_eq!(
+        speakers
+            .people()
+            .iter()
+            .filter(|p| p.name.eq_ignore_ascii_case("alice"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn daemon_down_error_message() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

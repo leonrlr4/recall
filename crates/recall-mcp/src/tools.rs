@@ -200,10 +200,15 @@ struct MeetingResponse {
     names: BTreeMap<SpeakerId, String>,
 }
 
+/// One entry of `GET /api/people`, or the `PATCH` reply.
 #[derive(Deserialize)]
 struct Person {
     id: String,
     name: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
+    named: bool,
 }
 
 #[derive(Clone)]
@@ -367,7 +372,9 @@ impl Recall {
         ))
     }
 
-    /// Set a speaker's display name everywhere it appears.
+    /// Set a speaker's display name everywhere it appears. When another
+    /// named person already goes by that name or alias, the speaker is
+    /// merged into them instead, so one person never appears twice.
     #[tool(annotations(
         read_only_hint = false,
         destructive_hint = false,
@@ -378,17 +385,34 @@ impl Recall {
         &self,
         Parameters(args): Parameters<NameSpeakerArgs>,
     ) -> ToolResult<String> {
+        // The web UI's rule: a rename onto an existing person's name would
+        // leave two named people with the same name.
+        let people: Vec<Person> = self.daemon.get(&["api", "people"], &[]).await?;
+        let key = |s: &str| s.trim().to_lowercase();
+        let wanted = key(&args.name);
+        let existing = people.iter().find(|p| {
+            p.id != args.person_id
+                && p.named
+                && std::iter::once(&p.name)
+                    .chain(&p.aliases)
+                    .any(|n| key(n) == wanted)
+        });
+        let body = match existing {
+            Some(p) => json!({ "merge_into": p.id }),
+            None => json!({ "name": args.name }),
+        };
         let person: Person = self
             .daemon
-            .patch(
-                &["api", "people", &args.person_id],
-                &json!({ "name": args.name }),
-            )
+            .patch(&["api", "people", &args.person_id], &body)
             .await?;
-        Ok(format!(
-            "Speaker {} is now named {:?}.",
-            person.id, person.name
-        ))
+        Ok(if existing.is_some() {
+            format!(
+                "Speaker {} is merged into {} ({:?}), who already had that name.",
+                args.person_id, person.id, person.name
+            )
+        } else {
+            format!("Speaker {} is now named {:?}.", person.id, person.name)
+        })
     }
 }
 
