@@ -11,6 +11,7 @@ recall-audio.workspace = true
 recall-llm.workspace = true
 recall-pipeline.workspace = true
 recall-server.workspace = true
+recall-mcp.workspace = true
 anyhow.workspace = true
 async-trait = "0.1"
 chrono.workspace = true

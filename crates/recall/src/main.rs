@@ -67,6 +67,9 @@ enum Cmd {
     },
     /// Record 5 s from the mic and the system audio and print their levels.
     Selftest,
+    /// Serve the meetings to an MCP client over stdin/stdout, through the
+    /// daemon's API: `claude mcp add recall -- recall mcp`.
+    Mcp,
     /// Manage the speech models.
     Models {
         #[command(subcommand)]
@@ -166,6 +169,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             command: IndexCmd::Rebuild,
         } => return rebuild(&Config::load()?),
         Cmd::Selftest => return run_selftest(&Config::load()?),
+        Cmd::Mcp => return serve_mcp(&Config::load()?),
         Cmd::Models {
             command: ModelsCmd::Download,
         } => return download_models(&Config::load()?),
@@ -181,6 +185,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Reply::Error { .. } => ExitCode::FAILURE,
         _ => ExitCode::SUCCESS,
     })
+}
+
+/// stdout carries the MCP session, so nothing else may print to it.
+fn serve_mcp(config: &Config) -> Result<ExitCode> {
+    let base = recall_mcp::Url::parse(&format!("http://127.0.0.1:{}", config.port))?;
+    tokio::runtime::Runtime::new()?.block_on(recall_mcp::serve_stdio(base))?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn open_index(config: &Config) -> Result<Index> {

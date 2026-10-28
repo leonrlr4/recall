@@ -6,6 +6,7 @@ members = [
     "crates/recall-llm",
     "crates/recall-pipeline",
     "crates/recall-server",
+    "crates/recall-mcp",
     "crates/recall",
 ]
 
@@ -30,3 +31,4 @@ recall-audio = { path = "crates/recall-audio" }
 recall-llm = { path = "crates/recall-llm" }
 recall-pipeline = { path = "crates/recall-pipeline" }
 recall-server = { path = "crates/recall-server" }
+recall-mcp = { path = "crates/recall-mcp" }
