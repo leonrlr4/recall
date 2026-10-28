@@ -42,6 +42,18 @@ A case marked `skip`, or missing either audio file, is reported as skipped.
   `ffmpeg -f lavfi -i "anoisesrc=d=20:c=white:r=48000:a=0.002:s=1" -c:a libopus -b:a 24k mic.ogg`
   (and `s=2` for `computer.ogg`).
 
+- `zh-en`: five Mandarin-English code-switched utterances from the CSZS
+  test split (files 2650, 953, 363, 20 and 92), 49.7 s with one second of
+  silence between them, on `computer.ogg` only; `mic.ogg` is digital
+  silence of the same length. English words sit inside Mandarin sentences
+  ("overall失效的possibility可以透過system設計的提升來降低"). `truth.json` holds the
+  dataset's references converted to Traditional Chinese with OpenCC `s2tw`,
+  all on `them`. The case measures how well code-switched speech is
+  recognised (`found`). With nothing on the microphone it does not test
+  separating two speakers or echo into the mic, so `side` and `leaked` only
+  catch remote speech landing on the wrong side. Source and licence (MIT)
+  are in `NOTICE`.
+
 The other cases have no audio yet. To record one, two people hold a call:
 person A reads the `me` lines into the microphone while their side captures
 the mic into `mic.ogg`; person B reads the `them` lines from the other end
@@ -49,8 +61,6 @@ while person A's side captures the system output into `computer.ogg`. Both
 files start at the same moment. Write each spoken line into `truth.json` with
 its side and times, then remove `"skip": true` and add thresholds.
 
-- `zh-en`: 60 s of Taiwanese Mandarin with English words mid-sentence
-  ("這段 export 會 timeout"), alternating between A and B.
 - `zh`: 60 s of Taiwanese Mandarin only, alternating between A and B.
 - `en-tw`: 60 s of English spoken by Taiwanese speakers, alternating
   between A and B.
