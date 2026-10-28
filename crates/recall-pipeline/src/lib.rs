@@ -13,6 +13,7 @@
 
 pub mod decode;
 pub mod diarize;
+pub mod meet_vote;
 pub mod merge;
 pub mod models;
 pub mod naming;
@@ -23,9 +24,10 @@ pub mod vad;
 
 pub use decode::decode_stereo;
 pub use diarize::{Diarizer, SherpaDiarizer, Turn};
+pub use meet_vote::{Interval, roster, speaking_intervals, vote};
 pub use merge::merge_sides;
 pub use models::{ModelId, ModelSpec};
-pub use naming::{apply_names, assign_clusters, name_clusters};
+pub use naming::{apply_names, assign_clusters, name_clusters, name_from_meet};
 pub use summarize::{merge_prompt, summarize};
 pub use transcribe::{Transcriber, Utterance, WhisperTranscriber, Word, to_traditional};
 pub use vad::{Region, SileroVad, Vad, drop_echo, merge_close};

@@ -9,15 +9,16 @@ use chrono::Utc;
 use recall_llm::Llm;
 use recall_store::speakers::ME;
 use recall_store::{
-    Config, Index, Meeting, MeetingDir, Side, SpeakerId, Speakers, Step, StepState,
+    Config, Index, Meeting, MeetingDir, Side, SpeakerId, Speakers, Step, StepState, read_events,
 };
 use tempfile::NamedTempFile;
 
 use crate::decode::decode_stereo;
 use crate::diarize::{Diarizer, SherpaDiarizer};
+use crate::meet_vote::{roster, speaking_intervals, vote};
 use crate::merge::merge_sides;
 use crate::models::{self, ModelId};
-use crate::naming::{apply_names, assign_clusters, name_clusters};
+use crate::naming::{apply_names, assign_clusters, name_clusters, name_from_meet};
 use crate::summarize::summarize;
 use crate::transcribe::{Transcriber, WhisperTranscriber};
 use crate::vad::{Region, SileroVad, Vad, drop_echo, merge_close};
@@ -33,6 +34,9 @@ const MERGE_GAP_MS: u32 = 300;
 const MAX_REGION_MS: u32 = 30_000;
 /// Cosine similarity a cluster needs to be named after a known person.
 const NAME_THRESHOLD: f32 = 0.6;
+/// Most voice embeddings kept per person when a cluster named through Meet
+/// enrols its voice.
+const MAX_VOICES: usize = 10;
 
 /// The models one pipeline run uses.
 pub struct Engines {
@@ -227,11 +231,30 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Names the clusters after known voices and registers new ones. Rerun
-    /// on its own, this only relabels clusters: segments whose speaker was
-    /// already resolved keep it, including any edit made since.
+    /// Names the clusters after known voices, then after the Meet speaking
+    /// events in `meet-events.jsonl` (which win over a voice match and enrol
+    /// the cluster's voice), and registers the voices still unknown. A
+    /// cluster the user named keeps its speaker. The Meet roster becomes the
+    /// meeting's `participants_hint`. Rerun on its own, this only relabels
+    /// clusters: segments whose speaker was already resolved keep it,
+    /// including any edit made since.
     fn name(&mut self) -> Result<()> {
+        let events = read_events(&self.dir.meet_events())?;
+        // Voted before the voiceprint match changes any cluster's speaker,
+        // which on a rerun is how the cluster's resolved segments are found.
+        let meet_names = vote(
+            &self.meeting.clusters,
+            &self.meeting.segments,
+            &speaking_intervals(&events),
+        );
         name_clusters(&mut self.meeting.clusters, self.speakers, NAME_THRESHOLD);
+        name_from_meet(
+            &mut self.meeting.clusters,
+            &meet_names,
+            self.speakers,
+            MAX_VOICES,
+        );
+        self.meeting.participants_hint = roster(&events);
         apply_names(
             &mut self.meeting.segments,
             &mut self.meeting.clusters,

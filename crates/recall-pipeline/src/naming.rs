@@ -3,7 +3,7 @@
 //! ids on the transcript.
 
 use recall_store::speakers::ME;
-use recall_store::{Cluster, Segment, Side, SpeakerId, Speakers, cosine};
+use recall_store::{Cluster, NamedBy, Segment, Side, SpeakerId, Speakers, cosine};
 
 use crate::diarize::Turn;
 
@@ -13,7 +13,7 @@ const NEAREST_TURN_MS: u32 = 2_000;
 
 /// Prefix of the temporary speaker id [`assign_clusters`] gives remote
 /// segments; [`apply_names`] replaces it.
-const CLUSTER_REF: &str = "cluster:";
+pub(crate) const CLUSTER_REF: &str = "cluster:";
 
 /// Gives each segment a speaker: `me` for the microphone, and for the remote
 /// side a temporary `cluster:{i}` id pointing into the returned clusters.
@@ -122,12 +122,16 @@ fn nearest_turn(segment: &Segment, turns: &[Turn]) -> Option<usize> {
 }
 
 /// Sets each cluster's speaker to the known person whose voice is most like
-/// its embedding, when the cosine similarity reaches `threshold`. Clusters
-/// with no such person, or with an empty embedding, are left as they are. A
-/// remote voice never matches `me` or a person nobody has named (see
+/// its embedding, when the cosine similarity reaches `threshold`, and marks
+/// it named by voiceprint. Clusters with no such person, with an empty
+/// embedding, or named by the user are left as they are. A remote voice
+/// never matches `me` or a person nobody has named (see
 /// [`recall_store::Person::named`]).
 pub fn name_clusters(clusters: &mut [Cluster], speakers: &Speakers, threshold: f32) {
-    for cluster in clusters.iter_mut().filter(|c| !c.embedding.is_empty()) {
+    for cluster in clusters
+        .iter_mut()
+        .filter(|c| !c.embedding.is_empty() && c.named_by != Some(NamedBy::User))
+    {
         let embedding = &cluster.embedding;
         let best = speakers
             .people()
@@ -138,7 +142,48 @@ pub fn name_clusters(clusters: &mut [Cluster], speakers: &Speakers, threshold: f
             .max_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((person, _)) = best {
             cluster.speaker = Some(person.id.clone());
+            cluster.named_by = Some(NamedBy::Voiceprint);
         }
+    }
+}
+
+/// Names each cluster after its Meet name in `names` (one per cluster, from
+/// [`crate::meet_vote::vote`]), replacing any voiceprint match, and marks it
+/// named by Meet. The person is the named one whose name or alias equals the
+/// Meet name ignoring case, never `me`, or a new person when there is none.
+/// The cluster's embedding is added to that person, keeping at most
+/// `max_voices`, unless the person already has it (a rerun). Clusters
+/// without a name, or named by the user, are left as they are.
+pub fn name_from_meet(
+    clusters: &mut [Cluster],
+    names: &[Option<String>],
+    speakers: &mut Speakers,
+    max_voices: usize,
+) {
+    for (cluster, name) in clusters.iter_mut().zip(names) {
+        let Some(name) = name else { continue };
+        if cluster.named_by == Some(NamedBy::User) {
+            continue;
+        }
+        let known = speakers
+            .people()
+            .iter()
+            .filter(|p| p.named && p.id.0 != ME)
+            .find(|p| {
+                std::iter::once(&p.name)
+                    .chain(&p.aliases)
+                    .any(|n| n.to_lowercase() == name.to_lowercase())
+            })
+            .map(|p| p.id.clone());
+        let id = known.unwrap_or_else(|| speakers.add(name, None));
+        let has_voice = speakers
+            .get(&id)
+            .is_some_and(|p| p.embeddings.contains(&cluster.embedding));
+        if !cluster.embedding.is_empty() && !has_voice {
+            speakers.add_embedding(&id, cluster.embedding.clone(), max_voices);
+        }
+        cluster.speaker = Some(id);
+        cluster.named_by = Some(NamedBy::Meet);
     }
 }
 
@@ -289,6 +334,68 @@ mod tests {
         speakers.rename(&stranger, "Ann").unwrap();
         name_clusters(&mut clusters, &speakers, 0.6);
         assert_eq!(clusters[0].speaker, Some(stranger));
+    }
+
+    #[test]
+    fn name_clusters_marks_voiceprint_and_keeps_user_names() {
+        let mut speakers = Speakers::default();
+        let tom = speakers.add("Tom", Some(vec![1.0, 0.0]));
+        let ann = SpeakerId("ann".into());
+        let mut clusters = [
+            cluster("Remote 1", vec![1.0, 0.0]),
+            Cluster {
+                speaker: Some(ann.clone()),
+                named_by: Some(NamedBy::User),
+                ..cluster("Remote 2", vec![1.0, 0.0])
+            },
+        ];
+
+        name_clusters(&mut clusters, &speakers, 0.6);
+
+        assert_eq!(clusters[0].speaker, Some(tom));
+        assert_eq!(clusters[0].named_by, Some(NamedBy::Voiceprint));
+        assert_eq!(clusters[1].speaker, Some(ann));
+        assert_eq!(clusters[1].named_by, Some(NamedBy::User));
+    }
+
+    #[test]
+    fn name_from_meet_matches_alias_skips_me_and_user_names() {
+        let mut speakers = Speakers::default();
+        let me_name = speakers.me().name.clone();
+        let tom = speakers.add("Tom Lin", None);
+        let other = speakers.add("Other", None);
+        speakers.merge(&tom, &other).unwrap(); // "Other" is now Tom's alias
+        let ann = SpeakerId("ann".into());
+        let mut clusters = [
+            cluster("Remote 1", vec![1.0, 0.0]),
+            cluster("Remote 2", vec![0.0, 1.0]),
+            Cluster {
+                speaker: Some(ann.clone()),
+                named_by: Some(NamedBy::User),
+                ..cluster("Remote 3", vec![0.5, 0.5])
+            },
+            cluster("Remote 4", vec![0.6, 0.4]),
+        ];
+        let names = [
+            Some("OTHER".to_string()),
+            Some(me_name.clone()),
+            Some("Tom Lin".to_string()),
+            None,
+        ];
+
+        name_from_meet(&mut clusters, &names, &mut speakers, 10);
+
+        assert_eq!(clusters[0].speaker, Some(tom.clone()));
+        assert_eq!(clusters[0].named_by, Some(NamedBy::Meet));
+        assert_eq!(speakers.get(&tom).unwrap().embeddings, [vec![1.0, 0.0]]);
+        // A remote voice is never me, even under my name.
+        let second = clusters[1].speaker.clone().unwrap();
+        assert_ne!(second.0, ME);
+        assert_eq!(speakers.get(&second).unwrap().name, me_name);
+        assert_eq!(clusters[2].speaker, Some(ann));
+        assert_eq!(clusters[2].named_by, Some(NamedBy::User));
+        assert_eq!(clusters[3].speaker, None);
+        assert_eq!(clusters[3].named_by, None);
     }
 
     #[test]

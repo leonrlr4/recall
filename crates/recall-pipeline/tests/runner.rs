@@ -14,7 +14,8 @@ use recall_pipeline::runner::{Engines, run_from};
 use recall_pipeline::{Diarizer, Region, Transcriber, Turn, Utterance, Vad};
 use recall_store::speakers::ME;
 use recall_store::{
-    Config, Index, ListFilter, Meeting, MeetingDir, Side, SpeakerId, Speakers, Step, StepState,
+    Cluster, Config, Index, ListFilter, MeetEvent, MeetEventKind, Meeting, MeetingDir, NamedBy,
+    Segment, Side, SpeakerId, Speakers, Step, StepState, append_events,
 };
 use tempfile::TempDir;
 use tokio::sync::mpsc;
@@ -432,6 +433,179 @@ async fn silent_meeting_is_done_with_no_segments() {
         .list(&ListFilter::default())
         .unwrap();
     assert_eq!(rows[0].state, "done");
+}
+
+/// Marks every step before Name done and gives the meeting one remote
+/// cluster that sounds like `[1, 0, 0]` and says one 40 s line, plus a line
+/// from the microphone.
+fn diarized(f: &Fixture) {
+    let mut meeting = Meeting::load(&f.dir.path()).unwrap();
+    for step in [Step::Segment, Step::Transcribe, Step::Diarize] {
+        meeting
+            .steps
+            .insert(step, StepState::Done { at: Utc::now() });
+    }
+    let line = |start_ms, end_ms, side, speaker: &str| Segment {
+        start_ms,
+        end_ms,
+        side,
+        speaker: Some(SpeakerId(speaker.into())),
+        text: "hello".into(),
+    };
+    meeting.segments = vec![
+        line(0, 40_000, Side::Them, "cluster:0"),
+        line(40_000, 45_000, Side::Me, ME),
+    ];
+    meeting.clusters = vec![Cluster {
+        label: "Remote 1".into(),
+        embedding: vec![1.0, 0.0, 0.0],
+        speaker: None,
+        named_by: None,
+    }];
+    meeting.save(&f.dir.path()).unwrap();
+}
+
+async fn run_name(f: &Fixture, speakers: &mut Speakers) {
+    let calls = Calls::default();
+    run_from(
+        &mut engines(&calls, false),
+        &f.config,
+        &f.dir,
+        speakers,
+        Step::Name,
+        |_, _| {},
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn meet_overrides_voiceprint_and_enrols_embedding() {
+    let f = fixture();
+    diarized(&f);
+    let mut speakers = Speakers::default();
+    let amy = speakers.add("Amy", Some(vec![1.0, 0.0, 0.0]));
+    // Matched case-insensitively against Meet's "Tom".
+    let tom = speakers.add("tom", Some(vec![0.0, 1.0, 0.0]));
+    let event = |t, kind| MeetEvent { t, kind };
+    append_events(
+        &f.dir.meet_events(),
+        &[
+            event(
+                0,
+                MeetEventKind::Roster {
+                    names: vec!["Tom".into(), "Amy".into()],
+                },
+            ),
+            event(
+                0,
+                MeetEventKind::Name {
+                    participant: "csrc:1".into(),
+                    name: "Tom".into(),
+                },
+            ),
+            event(
+                0,
+                MeetEventKind::SpeakingStart {
+                    participant: "csrc:1".into(),
+                },
+            ),
+            event(
+                40_000,
+                MeetEventKind::SpeakingStop {
+                    participant: "csrc:1".into(),
+                },
+            ),
+        ],
+    )
+    .unwrap();
+
+    run_name(&f, &mut speakers).await;
+
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    assert_eq!(meeting.clusters[0].speaker, Some(tom.clone()));
+    assert_eq!(meeting.clusters[0].named_by, Some(NamedBy::Meet));
+    assert_eq!(meeting.segments[0].speaker, Some(tom.clone()));
+    assert_eq!(meeting.participants_hint, ["Tom", "Amy"]);
+    let voices = |id| speakers.get(id).unwrap().embeddings.clone();
+    assert_eq!(voices(&tom), [vec![0.0, 1.0, 0.0], vec![1.0, 0.0, 0.0]]);
+    assert_eq!(voices(&amy), [vec![1.0, 0.0, 0.0]]);
+    assert_eq!(speakers.people().len(), 3, "no one else registered");
+
+    // Naming again neither changes the result nor enrols the voice twice.
+    run_name(&f, &mut speakers).await;
+    let again = Meeting::load(&f.dir.path()).unwrap();
+    assert_eq!(again.clusters, meeting.clusters);
+    assert_eq!(
+        speakers.get(&tom).unwrap().embeddings,
+        [vec![0.0, 1.0, 0.0], vec![1.0, 0.0, 0.0]]
+    );
+}
+
+#[tokio::test]
+async fn meet_name_new_to_the_registry_becomes_a_person() {
+    let f = fixture();
+    diarized(&f);
+    let mut speakers = Speakers::default();
+    let event = |t, kind| MeetEvent { t, kind };
+    append_events(
+        &f.dir.meet_events(),
+        &[
+            event(
+                0,
+                MeetEventKind::Name {
+                    participant: "csrc:1".into(),
+                    name: "Tom".into(),
+                },
+            ),
+            event(
+                0,
+                MeetEventKind::SpeakingStart {
+                    participant: "csrc:1".into(),
+                },
+            ),
+            event(
+                40_000,
+                MeetEventKind::SpeakingStop {
+                    participant: "csrc:1".into(),
+                },
+            ),
+        ],
+    )
+    .unwrap();
+
+    run_name(&f, &mut speakers).await;
+
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    let id = meeting.clusters[0].speaker.clone().unwrap();
+    let person = speakers.get(&id).unwrap();
+    assert_eq!(person.name, "Tom");
+    assert!(person.named);
+    assert_eq!(person.embeddings, [vec![1.0, 0.0, 0.0]]);
+    assert_eq!(meeting.clusters[0].named_by, Some(NamedBy::Meet));
+    let saved = Speakers::load(&f.config.speakers_path()).unwrap();
+    assert_eq!(saved.get(&id).unwrap().name, "Tom");
+}
+
+#[tokio::test]
+async fn no_events_file_keeps_old_behaviour() {
+    let f = fixture();
+    diarized(&f);
+    let mut speakers = Speakers::default();
+    let amy = speakers.add("Amy", Some(vec![1.0, 0.0, 0.0]));
+
+    run_name(&f, &mut speakers).await;
+
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    assert_eq!(meeting.clusters[0].speaker, Some(amy.clone()));
+    assert_eq!(meeting.clusters[0].named_by, Some(NamedBy::Voiceprint));
+    assert_eq!(meeting.segments[0].speaker, Some(amy.clone()));
+    assert!(meeting.participants_hint.is_empty());
+    assert_eq!(
+        speakers.get(&amy).unwrap().embeddings,
+        [vec![1.0, 0.0, 0.0]]
+    );
+    assert_eq!(speakers.people().len(), 2);
 }
 
 /// The queue worker runs pipelines on a spawned task, which needs a `Send`
