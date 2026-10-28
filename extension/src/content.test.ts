@@ -113,6 +113,26 @@ describe('startContent', () => {
     expect(statuses()).toEqual(['hook_failed']);
   });
 
+  it('current names are re-emitted every 30 s', () => {
+    loadFixture('speaking');
+    start();
+    fromHook({ kind: 'speaking_start', participant: 'csrc:12345' });
+    vi.advanceTimersByTime(1000);
+    fromHook({ kind: 'speaking_stop', participant: 'csrc:12345' });
+    // Long after the first name event left the 60 s window.
+    vi.advanceTimersByTime(121_000);
+
+    const last = sent[sent.length - 1].events;
+    const names = last.filter((e) => e.kind === 'name');
+    const rosters = last.filter((e) => e.kind === 'roster');
+    expect(names.map((e) => e.t)).toEqual([1_090_000, 1_120_000]);
+    expect(names.every((e) => e.kind === 'name' && e.participant === 'csrc:12345' && e.name === 'Amy Chen')).toBe(true);
+    expect(rosters).toEqual([
+      { t: 1_090_000, kind: 'roster', names: ['Amy Chen', 'Tom Lin'] },
+      { t: 1_120_000, kind: 'roster', names: ['Amy Chen', 'Tom Lin'] },
+    ]);
+  });
+
   it('flushes on page hide', () => {
     loadFixture('grid');
     start();

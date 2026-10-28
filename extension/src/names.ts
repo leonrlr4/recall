@@ -145,6 +145,11 @@ export class Namer {
     this.names.set(participant, name);
     return [{ t, kind: 'name', participant, name }];
   }
+
+  /** A `name` event at `t` for every participant that has a name. */
+  current(t: number): NameEvent[] {
+    return [...this.names].map(([participant, name]) => ({ t, kind: 'name', participant, name }));
+  }
 }
 
 /**
@@ -170,6 +175,11 @@ export class GlowFallback {
     }
     // Speaking events first, so a new speaker's start precedes its name.
     return [...this.tracker.update(t, levels), ...events];
+  }
+
+  /** A `name` event at `t` for every tile participant seen so far. */
+  current(t: number): NameEvent[] {
+    return [...this.names].map(([participant, name]) => ({ t, kind: 'name', participant, name }));
   }
 
   get speakingCount(): number {

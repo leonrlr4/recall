@@ -107,6 +107,10 @@
       this.names.set(participant, name);
       return [{ t, kind: "name", participant, name }];
     }
+    /** A `name` event at `t` for every participant that has a name. */
+    current(t) {
+      return [...this.names].map(([participant, name]) => ({ t, kind: "name", participant, name }));
+    }
   }
   class GlowFallback {
     tracker = new SpeakingTracker();
@@ -124,6 +128,10 @@
         }
       }
       return [...this.tracker.update(t, levels), ...events];
+    }
+    /** A `name` event at `t` for every tile participant seen so far. */
+    current(t) {
+      return [...this.names].map(([participant, name]) => ({ t, kind: "name", participant, name }));
     }
     get speakingCount() {
       return this.tracker.speakingCount;
@@ -166,6 +174,7 @@
   const SAMPLE_MS = 200;
   const ROSTER_MS = 1e4;
   const BATCH_MS = 2e3;
+  const REFRESH_MS = 3e4;
   const SIGNAL_LOST_MS = 3e5;
   const AUDIO_FRESH_MS = 2e3;
   function startContent({ win, doc, pathname, send, now }) {
@@ -234,6 +243,11 @@
       roster = names;
       queue.push({ t: now(), kind: "roster", names });
     };
+    const refresh = () => {
+      const t = now();
+      for (const e of fallback ? glow.current(t) : namer.current(t)) queue.push(e);
+      if (roster.length > 0) queue.push({ t, kind: "roster", names: roster });
+    };
     const flush = () => {
       const code = meetingCode(pathname());
       const events = queue.window(now());
@@ -246,7 +260,8 @@
     const timers = [
       win.setInterval(sample, SAMPLE_MS),
       win.setInterval(readRosterNow, ROSTER_MS),
-      win.setInterval(flush, BATCH_MS)
+      win.setInterval(flush, BATCH_MS),
+      win.setInterval(refresh, REFRESH_MS)
     ];
     return () => {
       win.removeEventListener("message", onMessage);
