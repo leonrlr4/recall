@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "recall for Google Meet",
+  "version": "0.1.0",
+  "description": "Reports who is speaking in Google Meet to the local recall daemon.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzNvyhMsxPx0/o88bfY+CqcvNcK7ahPr5GsO17QNOFT2i1KN7zV61fg+vwmtNgENniXbGJcK4GlDHKLKfVJMsOQRLYj1iSzIttSPTgF7CdQzWOPko4+1ssP178A1854NqCpcc7Zkuqypf7jflcmj1GQoi7S6Z1dtZqUoCxFiLv71MfYf/m3iWFnOLh3iIwO8xV1tVQQ5WOMAzJMQIKh4yt9o8jVHlRIbrCnG4SE/QVMC2IvRCGuf5xSybCGw3t8/H59yOiY1IWVDsJn5A0gdrOIsTQz3M3NT8ZiMDk/ZTsgrOQT5ETZhLoKvXN+Vql75ACl6JZvKrsXat/RuP8kY1EwIDAQAB",
+  "host_permissions": ["http://127.0.0.1:7474/*"],
+  "background": {
+    "service_worker": "worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["hook.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
