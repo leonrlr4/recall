@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { clock, speakerColor } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Segment } from '../lib/types';
@@ -16,6 +16,9 @@
     onsave,
     onnextspeaker,
     ondelete,
+    suggestions,
+    viaMeet,
+    onrename,
   }: {
     segments: Segment[];
     nameOf: (s: Segment) => string;
@@ -31,12 +34,72 @@
     onsave: (index: number, text: string) => Promise<void>;
     onnextspeaker: (index: number) => void;
     ondelete: (index: number) => void;
+    /** Roster names offered as one-click choices when renaming `speaker`. */
+    suggestions: (speaker: string) => string[];
+    /** The speaker's name came from Google Meet. */
+    viaMeet: (speaker: string) => boolean;
+    /** Renames the person `speaker` everywhere; rejects when it fails. */
+    onrename: (speaker: string, name: string) => Promise<void>;
   } = $props();
 
   let draft = $state('');
   let saving = $state(false);
   let lines: HTMLElement[] = $state([]);
   let editor = $state<HTMLTextAreaElement>();
+
+  /** Line whose speaker is being renamed. `me` is renamed on the People
+   *  page, and a line without a speaker has nobody to rename. */
+  let renaming = $state<number | null>(null);
+  let nameDraft = $state('');
+  let renameSaving = $state(false);
+  let nameInput = $state<HTMLInputElement>();
+  const renameSpeaker = $derived(renaming === null ? null : (segments[renaming]?.speaker ?? null));
+  const hints = $derived(renameSpeaker ? suggestions(renameSpeaker) : []);
+
+  // Any edit replaces the segments and may shift line indices, so an open
+  // rename closes rather than move to another speaker.
+  $effect(() => {
+    void segments;
+    untrack(() => (renaming = null));
+  });
+
+  const canRename = (seg: Segment) => !!seg.speaker && seg.speaker !== 'me';
+
+  function startRename(i: number) {
+    if (busy) return;
+    renaming = i;
+    nameDraft = nameOf(segments[i]);
+    tick().then(() => nameInput?.select());
+  }
+
+  async function rename(name: string) {
+    const speaker = renameSpeaker;
+    const trimmed = name.trim();
+    if (!speaker || renameSaving) return;
+    if (!trimmed || trimmed === nameOf(segments[renaming!])) {
+      renaming = null;
+      return;
+    }
+    renameSaving = true;
+    try {
+      await onrename(speaker, trimmed);
+      renaming = null;
+    } catch {
+      // The page shows the error; the field keeps what was typed.
+    } finally {
+      renameSaving = false;
+    }
+  }
+
+  function nameKey(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      renaming = null;
+    } else if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      rename(nameDraft);
+    }
+  }
 
   // Start an edit whenever `editing` is set, whether by the pencil button or
   // the `e` shortcut in the meeting page.
@@ -112,7 +175,22 @@
           {clock(seg.start_ms)}
         </button>
         <div class="content">
-          <span class="who">{nameOf(seg)}</span>
+          {#if canRename(seg)}
+            <button
+              class="who who-btn"
+              title={t('transcript.rename')}
+              disabled={busy}
+              aria-expanded={renaming === i}
+              onclick={() => (renaming === i ? (renaming = null) : startRename(i))}
+            >
+              {nameOf(seg)}
+            </button>
+          {:else}
+            <span class="who">{nameOf(seg)}</span>
+          {/if}
+          {#if seg.speaker && viaMeet(seg.speaker)}
+            <span class="via" title={t('transcript.via_meet_help')}>{t('transcript.via_meet')}</span>
+          {/if}
           {#if i === editing}
             <textarea
               bind:this={editor}
@@ -134,6 +212,36 @@
           {:else}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <span class="text" onclick={() => onplay(i)}>{seg.text}</span>
+          {/if}
+          {#if i === renaming}
+            <div class="rename">
+              {#if hints.length > 0}
+                <div class="hints" role="group" aria-label={t('transcript.rename_hints')}>
+                  <span class="muted hint">{t('transcript.rename_hints')}</span>
+                  {#each hints as hint (hint)}
+                    <button class="btn chip-btn" disabled={renameSaving} onclick={() => rename(hint)}>
+                      {hint}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+              <div class="rename-row">
+                <input
+                  bind:this={nameInput}
+                  bind:value={nameDraft}
+                  class="input"
+                  disabled={renameSaving}
+                  aria-label={t('transcript.rename_label', { name: nameOf(seg) })}
+                  onkeydown={nameKey}
+                />
+                <button class="btn primary" disabled={renameSaving} onclick={() => rename(nameDraft)}>
+                  {t('common.save')}
+                </button>
+                <button class="btn" disabled={renameSaving} onclick={() => (renaming = null)}>
+                  {t('common.cancel')}
+                </button>
+              </div>
+            </div>
           {/if}
         </div>
         {#if i !== editing}
@@ -240,6 +348,57 @@
     margin-right: 8px;
     color: var(--spk);
     font-weight: 600;
+  }
+
+  .who-btn {
+    padding: 0;
+    border: 0;
+    border-radius: 2px;
+    background: none;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .who-btn:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+
+  .via {
+    margin-right: 8px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 12px;
+    vertical-align: 1px;
+  }
+
+  .rename {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 8px 0;
+  }
+
+  .hints {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .chip-btn {
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 13px;
+  }
+
+  .rename-row {
+    display: flex;
+    gap: 8px;
+    max-width: 420px;
   }
 
   .text {

@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import en from '../i18n/en.json';
 import { format } from './i18n';
-import { recordActions, statusAnnouncement, statusChipText, type Snapshot } from './status';
+import {
+  canStopScreen,
+  recordActions,
+  statusAnnouncement,
+  statusChipText,
+  statusNotes,
+  type Snapshot,
+} from './status';
 
 /** `t` over the English strings, so the expectations read as the UI does. */
 function t(key: string, params?: Record<string, string | number>): string {
@@ -88,5 +95,33 @@ describe('status', () => {
     expect(statusAnnouncement(snap('recording', 'zoom', NOW - 1_000), {}, t)).toBe(
       statusAnnouncement(snap('recording', 'zoom', NOW - 9_000), {}, t),
     );
+  });
+
+  it('status_chip_shows_meet_and_screen_warnings', () => {
+    const live = (meet: string | null, screen: string | null): Snapshot => ({
+      ...snap('recording'),
+      meet,
+      screen,
+    });
+    expect(statusNotes(live(null, null), t)).toEqual([]);
+    expect(statusNotes(null, t)).toEqual([]);
+    expect(statusNotes(live('ok', 'recording'), t)).toEqual([]);
+    // Screen recording turned off in the config is not worth a note.
+    expect(statusNotes(live(null, 'off'), t)).toEqual([]);
+    expect(statusNotes(live('signal_lost', null), t)).toEqual([
+      { text: 'No speaker signal from Meet for 5 minutes', tone: 'warn' },
+    ]);
+    expect(statusNotes(live('hook_failed', 'error'), t)).toEqual([
+      { text: 'Meet speaker detection fell back to the video tiles', tone: 'warn' },
+      { text: 'Screen recording failed', tone: 'warn' },
+    ]);
+    expect(statusNotes({ ...snap('idle', null), meet: null, screen: 'picker' }, t)).toEqual([
+      { text: 'The screen picker will appear next time', tone: 'info' },
+    ]);
+
+    expect(canStopScreen(live(null, 'recording'))).toBe(true);
+    expect(canStopScreen(live(null, 'off'))).toBe(false);
+    expect(canStopScreen(snap('recording'))).toBe(false);
+    expect(canStopScreen(null)).toBe(false);
   });
 });

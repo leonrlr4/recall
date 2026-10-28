@@ -157,6 +157,8 @@ pub struct MeetingResponse {
     /// Display name for every speaker id the meeting mentions, plus `me`.
     names: BTreeMap<SpeakerId, String>,
     markdown: String,
+    /// `screen.mp4` exists, so `/api/meetings/{id}/screen` can play it.
+    has_screen: bool,
 }
 
 pub async fn get(
@@ -187,6 +189,7 @@ pub async fn get(
         Err(e) => return Err(anyhow::Error::new(e).context("reading meeting.md").into()),
     };
     Ok(Json(MeetingResponse {
+        has_screen: dir.screen().is_file(),
         meeting,
         names,
         markdown,

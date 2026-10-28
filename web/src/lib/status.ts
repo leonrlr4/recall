@@ -2,8 +2,10 @@
 import { clock } from './format';
 import type { Status, Step } from './types';
 
-/** The fields of `GET /api/status` the chip needs. */
-export type Snapshot = Pick<Status, 'phase' | 'since_ms' | 'source_app'>;
+/** The fields of `GET /api/status` the chip needs. `meet` and `screen` are
+ *  unknown until a status answer brings them. */
+export type Snapshot = Pick<Status, 'phase' | 'since_ms' | 'source_app'> &
+  Partial<Pick<Status, 'meet' | 'screen'>>;
 
 export type Tone = 'idle' | 'armed' | 'recording' | 'finishing' | 'processing';
 
@@ -87,4 +89,41 @@ export function recordActions(phase: string): RecordAction[] {
     default:
       return ['start'];
   }
+}
+
+/** A warning or hint shown beside the chip. */
+export interface StatusNote {
+  text: string;
+  tone: 'warn' | 'info';
+}
+
+/**
+ * Notes about the Meet extension and the screen recorder. `screen: "off"`
+ * is left out: it is reported during every recording while screen recording
+ * is turned off in the config.
+ */
+export function statusNotes(snapshot: Snapshot | null, t: T): StatusNote[] {
+  const notes: StatusNote[] = [];
+  switch (snapshot?.meet) {
+    case 'signal_lost':
+      notes.push({ text: t('status.meet_signal_lost'), tone: 'warn' });
+      break;
+    case 'hook_failed':
+      notes.push({ text: t('status.meet_hook_failed'), tone: 'warn' });
+      break;
+  }
+  switch (snapshot?.screen) {
+    case 'error':
+      notes.push({ text: t('status.screen_error'), tone: 'warn' });
+      break;
+    case 'picker':
+      notes.push({ text: t('status.screen_picker'), tone: 'info' });
+      break;
+  }
+  return notes;
+}
+
+/** The live recording's screen recorder is running and can be stopped. */
+export function canStopScreen(snapshot: Snapshot | null): boolean {
+  return snapshot?.screen === 'recording';
 }

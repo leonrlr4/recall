@@ -3,9 +3,11 @@
   import { t } from '../lib/i18n';
   import { live, sendRecord } from '../lib/live.svelte';
   import {
+    canStopScreen,
     recordActions,
     statusAnnouncement,
     statusChipText,
+    statusNotes,
     type RecordAction,
   } from '../lib/status';
 
@@ -21,6 +23,8 @@
   const chip = $derived(statusChipText(live.snapshot, live.progress, now, t));
   const actions = $derived(recordActions(phase));
   const announcement = $derived(statusAnnouncement(live.snapshot, live.progress, t));
+  const notes = $derived(statusNotes(live.snapshot, t));
+  const stopScreen = $derived(canStopScreen(live.snapshot));
 
   // Tick the elapsed time only while recording.
   $effect(() => {
@@ -62,7 +66,7 @@
     }
   }
 
-  async function run(action: RecordAction) {
+  async function run(action: RecordAction | 'screen_off') {
     busy = true;
     error = null;
     try {
@@ -89,6 +93,9 @@
     <span class="dot" aria-hidden="true"></span>
     {chip.text}
   </span>
+  {#each notes as note (note.text)}
+    <span class="note {note.tone}" role="status" title={note.text}>{note.text}</span>
+  {/each}
   {#if confirming}
     <!-- Escape from either button cancels; the listener sits on their container. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -113,6 +120,16 @@
         {label[action]}
       </button>
     {/each}
+    {#if stopScreen}
+      <button
+        class="btn"
+        disabled={busy}
+        title={t('status.screen_off_help')}
+        onclick={() => run('screen_off')}
+      >
+        {t('status.screen_off')}
+      </button>
+    {/if}
   {/if}
   {#if error}
     <span class="error" role="alert" title={error}>{error}</span>
@@ -183,6 +200,23 @@
   .processing {
     background: var(--accent-soft);
     color: var(--accent);
+  }
+
+  .note {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .note.warn {
+    color: var(--orange);
+  }
+
+  .note.info {
+    color: var(--text-2);
   }
 
   .confirm {

@@ -32,12 +32,24 @@ function apply(e: RecallEvent) {
     case 'recording':
       recorderEvents++;
       // The event has no start time; the status answer brings the daemon's.
-      live.snapshot = { phase: 'recording', since_ms: Date.now(), source_app: e.app };
+      live.snapshot = {
+        phase: 'recording',
+        since_ms: Date.now(),
+        source_app: e.app,
+        meet: null,
+        screen: null,
+      };
       void refreshStatus();
       break;
     case 'stopped':
       recorderEvents++;
-      live.snapshot = { phase: 'idle', since_ms: Date.now(), source_app: null };
+      live.snapshot = {
+        phase: 'idle',
+        since_ms: Date.now(),
+        source_app: null,
+        meet: null,
+        screen: null,
+      };
       live.version++;
       void refreshStatus();
       break;
@@ -61,14 +73,20 @@ export async function refreshStatus(): Promise<void> {
     const s = await status();
     if (recorderEvents !== seen || mine < appliedSeq) return;
     appliedSeq = mine;
-    live.snapshot = { phase: s.phase, since_ms: s.since_ms, source_app: s.source_app };
+    live.snapshot = {
+      phase: s.phase,
+      since_ms: s.since_ms,
+      source_app: s.source_app,
+      meet: s.meet,
+      screen: s.screen,
+    };
   } catch {
     // Keep the last known state; the next poll or event corrects it.
   }
 }
 
 /** Sends a record command, then reads back the state it led to. */
-export async function sendRecord(action: RecordAction): Promise<void> {
+export async function sendRecord(action: RecordAction | 'screen_off'): Promise<void> {
   await record(action);
   await refreshStatus();
 }

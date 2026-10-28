@@ -106,3 +106,47 @@ export function draw(canvas: HTMLCanvasElement, peaks: Peaks, o: DrawOptions): v
     ctx.fillRect(Math.round(playedX) - 1, tickZone, 2, h - tickZone);
   }
 }
+
+// Screen video sync. `offsetMs` is `screen_offset_ms`: how long after the
+// audio origin the first screen frame was captured (negative when the screen
+// started first). The audio element is the clock; the video follows it.
+
+/** How far the video may drift from the audio before it is moved. */
+export const SYNC_TOLERANCE_MS = 300;
+
+/** Video position in seconds for an audio position; 0 before the screen started. */
+export function videoSeconds(audioMs: number, offsetMs: number): number {
+  return Math.max(0, (audioMs - offsetMs) / 1000);
+}
+
+/** Audio position in milliseconds for a video position. */
+export function audioMsAt(videoSec: number, offsetMs: number): number {
+  return videoSec * 1000 + offsetMs;
+}
+
+/**
+ * Where to move the video so it matches the audio, or null when it is within
+ * [`SYNC_TOLERANCE_MS`]. Past the video's end (`durationSec`, NaN while
+ * unknown) the target is the last frame.
+ */
+export function videoCorrection(
+  videoSec: number,
+  audioMs: number,
+  offsetMs: number,
+  durationSec: number,
+): number | null {
+  let target = videoSeconds(audioMs, offsetMs);
+  if (Number.isFinite(durationSec)) target = Math.min(target, durationSec);
+  return Math.abs(videoSec - target) * 1000 > SYNC_TOLERANCE_MS ? target : null;
+}
+
+/**
+ * Playback rate that closes a drift smaller than [`SYNC_TOLERANCE_MS`]
+ * without a seek: a seek while playing costs a decode, which leaves the video
+ * behind by about as much as it fixed. Within 50 ms the rate is 1.
+ */
+export function catchUpRate(videoSec: number, audioMs: number, offsetMs: number): number {
+  const drift = videoSeconds(audioMs, offsetMs) - videoSec;
+  if (Math.abs(drift) < 0.05) return 1;
+  return 1 + Math.max(-0.25, Math.min(0.25, drift));
+}

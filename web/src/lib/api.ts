@@ -36,6 +36,10 @@ export function audioUrl(id: string): string {
   return `${meetingUrl(id)}/audio`;
 }
 
+export function screenUrl(id: string): string {
+  return `${meetingUrl(id)}/screen`;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -129,8 +133,8 @@ export function status(): Promise<Status> {
   return request(`${BASE}/status`);
 }
 
-/** `POST /api/record/{start|stop|discard}`; the daemon answers 204. */
-export function record(action: 'start' | 'stop' | 'discard'): Promise<void> {
+/** `POST /api/record/{start|stop|discard|screen_off}`; the daemon answers 204. */
+export function record(action: 'start' | 'stop' | 'discard' | 'screen_off'): Promise<void> {
   return request(`${BASE}/record/${action}`, { method: 'POST' });
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { peaksFrom } from './player';
+import { audioMsAt, catchUpRate, peaksFrom, videoCorrection, videoSeconds } from './player';
 
 describe('player', () => {
   it('peaks_take_max_abs_per_bin_per_channel', () => {
@@ -14,5 +14,31 @@ describe('player', () => {
     const p = peaksFrom([new Float32Array([1, 1])], 4);
     expect(p.me.length).toBe(4);
     expect(Array.from(p.them)).toEqual([0, 0, 0, 0]);
+  });
+});
+
+describe('screen video sync', () => {
+  it('player_maps_audio_time_to_video_time_with_offset', () => {
+    // The screen started 2 s after the audio.
+    expect(videoSeconds(5_000, 2_000)).toBe(3);
+    expect(videoSeconds(1_000, 2_000)).toBe(0);
+    // The screen started before the audio.
+    expect(videoSeconds(5_000, -500)).toBe(5.5);
+    expect(videoSeconds(5_000, 0)).toBe(5);
+    expect(audioMsAt(3, 2_000)).toBe(5_000);
+
+    // Within 300 ms nothing moves; beyond it the video jumps to the audio.
+    expect(videoCorrection(3.25, 5_000, 2_000, 60)).toBeNull();
+    expect(videoCorrection(3.4, 5_000, 2_000, 60)).toBe(3);
+    expect(videoCorrection(0, 1_000, 2_000, 60)).toBeNull();
+    // Past the end of the video it stays on its last frame.
+    expect(videoCorrection(60, 90_000, 2_000, 60)).toBeNull();
+    expect(videoCorrection(10, 90_000, 2_000, 60)).toBe(60);
+    expect(videoCorrection(10, 90_000, 2_000, NaN)).toBe(88);
+
+    // A small drift is closed by playing faster or slower, not by seeking.
+    expect(catchUpRate(3.02, 5_000, 2_000)).toBe(1);
+    expect(catchUpRate(2.8, 5_000, 2_000)).toBeCloseTo(1.2);
+    expect(catchUpRate(3.1, 5_000, 2_000)).toBeCloseTo(0.9);
   });
 });

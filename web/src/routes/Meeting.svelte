@@ -1,15 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Ask from '../components/Ask.svelte';
+  import ScreenVideo from '../components/ScreenVideo.svelte';
   import StateChip from '../components/StateChip.svelte';
   import Summary from '../components/Summary.svelte';
   import Transcript from '../components/Transcript.svelte';
   import Waveform from '../components/Waveform.svelte';
-  import { audioUrl, deleteMeeting, getMeeting, patchMeeting, rerun } from '../lib/api';
+  import {
+    audioUrl,
+    deleteMeeting,
+    getMeeting,
+    patchMeeting,
+    patchPerson,
+    rerun,
+    screenUrl,
+  } from '../lib/api';
   import { clock, stateOfSteps } from '../lib/format';
   import { locale, t } from '../lib/i18n';
   import { ignoreKey } from '../lib/keys';
   import { live } from '../lib/live.svelte';
+  import { renameSuggestions } from '../lib/people';
   import { link, meetingPath, navigate } from '../lib/router';
   import { shiftAfterDelete } from '../lib/transcript';
   import { STEPS, type MeetingDetail, type Segment, type Step } from '../lib/types';
@@ -141,6 +151,30 @@
       return t('speaker.unknown');
     }
     return seg.side === 'me' ? t('speaker.me') : t('speaker.them');
+  }
+
+  /** Speakers whose cluster took its name from Google Meet. */
+  const meetNamed = $derived(
+    new Set(
+      (meeting?.clusters ?? [])
+        .filter((c) => c.named_by === 'meet' && c.speaker)
+        .map((c) => c.speaker as string),
+    ),
+  );
+
+  function suggestions(speaker: string): string[] {
+    return detail ? renameSuggestions(detail.meeting.participants_hint, detail.names, speaker) : [];
+  }
+
+  /** Names the person behind `speaker`, which renames them in every meeting. */
+  async function renameSpeaker(speaker: string, name: string) {
+    try {
+      await patchPerson(speaker, { name });
+    } catch (e) {
+      flash(t('meeting.save_failed', { error: e instanceof Error ? e.message : String(e) }), 'err');
+      throw e;
+    }
+    await load();
   }
 
   function flash(text: string, kind: 'ok' | 'err' = 'ok') {
@@ -336,6 +370,12 @@
           <span aria-hidden="true">·</span>
           <span>{meeting.source_app}</span>
         {/if}
+        {#if meeting.screen_error}
+          <span aria-hidden="true">·</span>
+          <span class="screen-error" title={meeting.screen_error}>
+            {t('meeting.screen_error', { error: meeting.screen_error })}
+          </span>
+        {/if}
         <span class="spacer"></span>
         <label class="rerun">
           <span class="sr-only">{t('meeting.rerun_step')}</span>
@@ -366,28 +406,49 @@
         />
       </aside>
 
-      <section class="middle panel" aria-label={t('transcript.title')}>
-        <div class="mid-head">
-          <h2 class="panel-title">{t('transcript.title')}</h2>
-          <span class="muted keys" title={t('keys.meeting')}>
-            <kbd>{t('keys.space_key')}</kbd> <kbd>[</kbd> <kbd>]</kbd> <kbd>e</kbd> <kbd>s</kbd>
-            <span class="sr-only">{t('keys.meeting')}</span>
-          </span>
-        </div>
-        <Transcript
-          {segments}
-          {nameOf}
-          {active}
-          playing={!paused}
-          bind:editing
-          canCycle={speakers.length > 1}
-          busy={pending}
-          onplay={playLine}
-          onsave={saveText}
-          onnextspeaker={nextSpeaker}
-          ondelete={deleteLine}
-        />
-      </section>
+      <div class="middle">
+        {#if detail?.has_screen}
+          <section class="panel screen" aria-label={t('player.screen')}>
+            <ScreenVideo
+              src={screenUrl(id)}
+              offsetMs={meeting.screen_offset_ms ?? 0}
+              {currentMs}
+              {paused}
+              onplay={() => audio?.play().catch(() => {})}
+              onpause={() => audio?.pause()}
+              onseek={(ms) => {
+                cursor = lineAt(ms);
+                seek(ms, false);
+              }}
+            />
+          </section>
+        {/if}
+        <section class="transcript-panel panel" aria-label={t('transcript.title')}>
+          <div class="mid-head">
+            <h2 class="panel-title">{t('transcript.title')}</h2>
+            <span class="muted keys" title={t('keys.meeting')}>
+              <kbd>{t('keys.space_key')}</kbd> <kbd>[</kbd> <kbd>]</kbd> <kbd>e</kbd> <kbd>s</kbd>
+              <span class="sr-only">{t('keys.meeting')}</span>
+            </span>
+          </div>
+          <Transcript
+            {segments}
+            {nameOf}
+            {active}
+            playing={!paused}
+            bind:editing
+            canCycle={speakers.length > 1}
+            busy={pending}
+            onplay={playLine}
+            onsave={saveText}
+            onnextspeaker={nextSpeaker}
+            ondelete={deleteLine}
+            {suggestions}
+            viaMeet={(speaker) => meetNamed.has(speaker)}
+            onrename={renameSpeaker}
+          />
+        </section>
+      </div>
 
       <aside class="right">
         <section class="panel player">
@@ -546,7 +607,26 @@
 
   .middle {
     grid-area: middle;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+  }
+
+  .screen {
     padding: 8px;
+  }
+
+  .transcript-panel {
+    padding: 8px;
+  }
+
+  .screen-error {
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--orange);
   }
 
   .mid-head {

@@ -22,6 +22,8 @@ export interface Segment {
 export interface Cluster {
   label: string;
   speaker: string | null;
+  /** How `speaker` was chosen; absent in older records. */
+  named_by?: 'voiceprint' | 'meet' | 'user';
 }
 
 export interface ActionItem {
@@ -54,6 +56,12 @@ export interface Meeting {
   clusters: Cluster[];
   summary: Summary | null;
   models: Record<string, string>;
+  /** Names from the Meet roster, offered when renaming a speaker. */
+  participants_hint: string[];
+  /** Milliseconds from the audio origin to the first screen frame. */
+  screen_offset_ms?: number;
+  /** Why the screen recording failed, when it did. */
+  screen_error?: string;
 }
 
 export interface MeetingDetail {
@@ -61,6 +69,8 @@ export interface MeetingDetail {
   /** Display name per speaker id. */
   names: Record<string, string>;
   markdown: string;
+  /** The meeting has `screen.mp4`, served at `/api/meetings/{id}/screen`. */
+  has_screen: boolean;
 }
 
 export interface MeetingRow {
@@ -173,4 +183,9 @@ export interface Status {
   source_app: string | null;
   mic_peak: number;
   sys_peak: number;
+  /** The Meet extension's latest status during a recording, e.g. `signal_lost`. */
+  meet: string | null;
+  /** `recording`, `off` or `error` during a recording; `picker` outside one
+   *  when the next recording will show the portal's screen picker. */
+  screen: string | null;
 }

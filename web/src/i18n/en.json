@@ -22,7 +22,13 @@
     "label": "Recorder",
     "live_recording": "Recording {app}",
     "live_recording_any": "Recording",
-    "live_processing": "Processing · {step}"
+    "live_processing": "Processing · {step}",
+    "meet_signal_lost": "No speaker signal from Meet for 5 minutes",
+    "meet_hook_failed": "Meet speaker detection fell back to the video tiles",
+    "screen_error": "Screen recording failed",
+    "screen_picker": "The screen picker will appear next time",
+    "screen_off": "Stop screen recording",
+    "screen_off_help": "Stops this meeting's screen recording and deletes its video. Audio keeps recording."
   },
   "common": {
     "loading": "Loading…",
@@ -91,7 +97,8 @@
     "delete_confirm": "Delete “{title}” with its audio and transcript? This cannot be undone.",
     "delete_failed": "Could not delete: {error}",
     "save_failed": "Could not save: {error}",
-    "load_failed": "Could not load this meeting: {error}"
+    "load_failed": "Could not load this meeting: {error}",
+    "screen_error": "Screen recording failed: {error}"
   },
   "summary": {
     "title": "Summary",
@@ -110,7 +117,12 @@
     "edit_label": "Line text",
     "edit_hint": "Enter saves, Esc cancels",
     "next_speaker": "Next speaker (s)",
-    "delete": "Delete line"
+    "delete": "Delete line",
+    "rename": "Rename this speaker",
+    "rename_label": "New name for {name}",
+    "rename_hints": "In this Meet call",
+    "via_meet": "via Meet",
+    "via_meet_help": "Named from who was speaking in Google Meet"
   },
   "speaker": {
     "me": "Me",
@@ -122,7 +134,8 @@
     "them": "Them",
     "waveform": "Waveform, click to seek",
     "loading_waveform": "Drawing waveform…",
-    "jump_chapter": "Jump to chapter {title}"
+    "jump_chapter": "Jump to chapter {title}",
+    "screen": "Screen recording"
   },
   "ask": {
     "title": "Ask this meeting",
@@ -176,7 +189,7 @@
     "data_dir": "Data folder",
     "data_dir_help": "Absolute path for the speaker registry, search index and models.",
     "record_screen": "Record the screen too",
-    "record_screen_help": "Not used yet.",
+    "record_screen_help": "Records the screen during each meeting with gpu-screen-recorder. The first recording asks which screen to share.",
     "allowlist": "Apps that start a recording",
     "allowlist_help": "recall records when one of these apps uses the microphone. Press Enter or comma to add.",
     "tag_placeholder": "Add an app…",

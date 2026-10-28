@@ -1,6 +1,6 @@
 //! Local HTTP server for the web UI: the JSON API under `/api`, server-sent
-//! events, meeting audio, and the embedded single-page app for every other
-//! path.
+//! events, meeting audio and screen video, and the embedded single-page app
+//! for every other path.
 
 mod actions;
 mod ask;
@@ -115,6 +115,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/meetings/{id}/rerun/{step}", post(meetings::rerun))
         .route("/meetings/{id}/audio", get(audio::serve))
+        .route("/meetings/{id}/screen", get(audio::serve_screen))
         .route("/meetings/{id}/ask", post(ask::ask))
         .route("/people", get(people::list))
         .route("/people/{id}", axum::routing::patch(people::patch))

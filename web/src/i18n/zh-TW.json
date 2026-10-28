@@ -22,7 +22,13 @@
     "label": "錄音狀態",
     "live_recording": "正在錄製 {app}",
     "live_recording_any": "錄音中",
-    "live_processing": "處理中 · {step}"
+    "live_processing": "處理中 · {step}",
+    "meet_signal_lost": "Meet 已 5 分鐘沒有傳來發言訊號",
+    "meet_hook_failed": "Meet 發言偵測改用視訊畫面判斷",
+    "screen_error": "螢幕錄影失敗",
+    "screen_picker": "下次錄影時會跳出螢幕選擇視窗",
+    "screen_off": "停止螢幕錄影",
+    "screen_off_help": "停止這場會議的螢幕錄影並刪除影片，錄音會繼續。"
   },
   "common": {
     "loading": "載入中…",
@@ -91,7 +97,8 @@
     "delete_confirm": "要刪除「{title}」以及它的錄音和逐字稿嗎？刪除後無法復原。",
     "delete_failed": "無法刪除：{error}",
     "save_failed": "無法儲存：{error}",
-    "load_failed": "無法載入這場會議：{error}"
+    "load_failed": "無法載入這場會議：{error}",
+    "screen_error": "螢幕錄影失敗：{error}"
   },
   "summary": {
     "title": "摘要",
@@ -110,7 +117,12 @@
     "edit_label": "這行的文字",
     "edit_hint": "Enter 儲存，Esc 取消",
     "next_speaker": "換下一位講者 (s)",
-    "delete": "刪除這行"
+    "delete": "刪除這行",
+    "rename": "重新命名這位講者",
+    "rename_label": "{name} 的新名字",
+    "rename_hints": "這場 Meet 的參與者",
+    "via_meet": "來自 Meet",
+    "via_meet_help": "依 Google Meet 裡誰在發言命名"
   },
   "speaker": {
     "me": "我",
@@ -122,7 +134,8 @@
     "them": "對方",
     "waveform": "波形，點一下跳到該處",
     "loading_waveform": "正在繪製波形…",
-    "jump_chapter": "跳到章節「{title}」"
+    "jump_chapter": "跳到章節「{title}」",
+    "screen": "螢幕錄影"
   },
   "ask": {
     "title": "問這場會議",
@@ -176,7 +189,7 @@
     "data_dir": "資料目錄",
     "data_dir_help": "絕對路徑。存放講者名冊、搜尋索引和模型。",
     "record_screen": "同時錄製螢幕",
-    "record_screen_help": "尚未使用。",
+    "record_screen_help": "每場會議都用 gpu-screen-recorder 錄下螢幕。第一次錄影會詢問要分享哪個螢幕。",
     "allowlist": "會觸發錄音的 App",
     "allowlist_help": "這些 App 使用麥克風時，recall 就開始錄音。按 Enter 或逗號新增。",
     "tag_placeholder": "新增 App…",

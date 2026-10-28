@@ -514,6 +514,51 @@ async fn audio_supports_range() {
 }
 
 #[tokio::test]
+async fn screen_served_with_range() {
+    let h = harness().await;
+    fs::write(
+        h.meeting_path(WEEKLY).join("screen.mp4"),
+        b"0123456789abcdef",
+    )
+    .unwrap();
+    // A failed remux leaves only the Matroska file, which is not served.
+    fs::write(
+        h.meeting_path(REVIEW).join("screen.mkv"),
+        b"0123456789abcdef",
+    )
+    .unwrap();
+    let client = reqwest::Client::new();
+
+    let res = client
+        .get(h.url(&format!("/api/meetings/{}/screen", encode(WEEKLY))))
+        .header("Range", "bytes=2-5")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 206);
+    assert_eq!(res.headers()["content-range"], "bytes 2-5/16");
+    assert_eq!(res.headers()["content-type"], "video/mp4");
+    assert_eq!(res.bytes().await.unwrap().as_ref(), b"2345");
+
+    let missing = client
+        .get(h.url(&format!("/api/meetings/{}/screen", encode(REVIEW))))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+
+    let get = |id: &str| {
+        client
+            .get(h.url(&format!("/api/meetings/{}", encode(id))))
+            .send()
+    };
+    let weekly: Value = get(WEEKLY).await.unwrap().json().await.unwrap();
+    let review: Value = get(REVIEW).await.unwrap().json().await.unwrap();
+    assert_eq!(weekly["has_screen"], true);
+    assert_eq!(review["has_screen"], false);
+}
+
+#[tokio::test]
 async fn ask_streams_tokens_then_done() {
     let h = harness().await;
     let res = reqwest::Client::new()
