@@ -552,13 +552,16 @@ impl<'a> StatusReporter<'a> {
     fn publish(&mut self, mut snapshot: StatusSnapshot) {
         let mut shared = self.status.write().unwrap_or_else(PoisonError::into_inner);
         carry_shared(&mut snapshot, &shared);
-        if snapshot == self.last {
-            return;
+        // The shared snapshot can differ from `last` when the Meet sink set
+        // `meet` outside a recording; storing it again clears that.
+        if *shared != snapshot {
+            *shared = snapshot.clone();
         }
-        *shared = snapshot.clone();
         drop(shared);
-        self.last = snapshot;
-        self.write_file();
+        if snapshot != self.last {
+            self.last = snapshot;
+            self.write_file();
+        }
     }
 
     fn write_file(&self) {
@@ -627,6 +630,43 @@ mod tests {
             carry_shared(&mut next, &shared);
             assert_eq!(next.meet, None, "{phase}");
         }
+    }
+
+    #[test]
+    fn publish_clears_meet_set_outside_a_recording() {
+        let tmp = tempfile::tempdir().unwrap();
+        let armed = StatusSnapshot {
+            phase: "armed".into(),
+            since_ms: 1,
+            source_app: Some("brave".into()),
+            mic_peak: 0.0,
+            sys_peak: 0.0,
+            meet: None,
+            screen: None,
+        };
+        let status = RwLock::new(armed.clone());
+        let live = LiveSlot::default();
+        let mut reporter = StatusReporter {
+            status: &status,
+            live: &live,
+            state_path: tmp.path().join("state.json"),
+            last: armed.clone(),
+            start_failed: false,
+        };
+        // The sink stores a status while armed, or after a finished
+        // recording's last publish; the next unchanged snapshot clears it.
+        status.write().unwrap().meet = Some("signal_lost".into());
+        reporter.publish(armed.clone());
+        assert_eq!(status.read().unwrap().meet, None);
+
+        let idle = StatusSnapshot {
+            phase: "idle".into(),
+            ..armed
+        };
+        reporter.publish(idle.clone());
+        status.write().unwrap().meet = Some("ok".into());
+        reporter.publish(idle);
+        assert_eq!(status.read().unwrap().meet, None);
     }
 
     #[test]

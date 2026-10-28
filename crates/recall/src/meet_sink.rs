@@ -98,7 +98,6 @@ impl MeetSink<'_> {
             seen.keys.clear();
         }
         let stored = store(batch, live, &mut seen.keys)?;
-        drop(slot);
         let newest = stored
             .iter()
             .filter_map(|e| match &e.kind {
@@ -112,6 +111,10 @@ impl MeetSink<'_> {
                 .unwrap_or_else(PoisonError::into_inner)
                 .meet = Some(value.clone());
         }
+        // Released only now: once the recorder has emptied the slot, no
+        // status from this recording can be written after its own clearing
+        // publish.
+        drop(slot);
         Ok(stored.len())
     }
 }
