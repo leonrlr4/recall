@@ -4,6 +4,7 @@
 // the receiver, identifies a participant. Results go to the isolated-world
 // content script with window.postMessage, marked `source: "recall"`.
 
+import { wallClock } from './clock';
 import { SourceLevels, SPEAKING_LEVEL, SpeakingTracker, type RtpSource } from './csrc';
 
 declare global {
@@ -16,11 +17,6 @@ export const POLL_MS = 100;
 
 /** Minimum gap between two page-internal `audio` heartbeats. */
 const AUDIO_HEARTBEAT_MS = 1000;
-
-/** Unix ms, whole: the daemon reads `t` as an integer. */
-function wallClock(): number {
-  return Math.round(performance.timeOrigin + performance.now());
-}
 
 /**
  * Wraps `win.RTCPeerConnection` and starts polling its audio receivers.

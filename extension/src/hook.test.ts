@@ -118,4 +118,13 @@ describe('installHook', () => {
     expect(posted).toEqual([{ source: 'recall', t: 1_000_000, kind: 'status', status: 'hook_failed' }]);
     expect(document.documentElement.dataset.recallHook).toBe('failed');
   });
+
+  it('stamps events with wall-clock time by default', () => {
+    // performance.now() stops while the machine sleeps; the daemon compares
+    // `t` against wall time.
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+    delete (window as unknown as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+    stops.push(installHook(window));
+    expect(posted).toEqual([{ source: 'recall', t: 1_000_000, kind: 'status', status: 'hook_failed' }]);
+  });
 });

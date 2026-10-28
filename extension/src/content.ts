@@ -4,6 +4,7 @@
 // Content scripts never fetch: their requests would carry the
 // meet.google.com origin and hit the browser's local-network prompt.
 
+import { wallClock } from './clock';
 import { GlowFallback, Namer, readRoster, readTiles } from './names';
 import { EventQueue, meetingCode, sanitize, type MeetEvent } from './queue';
 
@@ -165,6 +166,6 @@ if (import.meta.env.MODE === 'content') {
     doc: document,
     pathname: () => location.pathname,
     send: sendToWorker,
-    now: () => Math.round(performance.timeOrigin + performance.now()),
+    now: wallClock,
   });
 }

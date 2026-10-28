@@ -1,5 +1,8 @@
 (function() {
   "use strict";
+  function wallClock() {
+    return Math.round(Date.now());
+  }
   const SPEAKING_LEVEL = 0.02;
   const HANGOVER_MS = 500;
   class SpeakingTracker {
@@ -283,7 +286,7 @@
       doc: document,
       pathname: () => location.pathname,
       send: sendToWorker,
-      now: () => Math.round(performance.timeOrigin + performance.now())
+      now: wallClock
     });
   }
 })();

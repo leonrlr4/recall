@@ -1,5 +1,8 @@
 (function() {
   "use strict";
+  function wallClock() {
+    return Math.round(Date.now());
+  }
   const SPEAKING_LEVEL = 0.02;
   const HANGOVER_MS = 500;
   class SpeakingTracker {
@@ -44,9 +47,6 @@
   }
   const POLL_MS = 100;
   const AUDIO_HEARTBEAT_MS = 1e3;
-  function wallClock() {
-    return Math.round(performance.timeOrigin + performance.now());
-  }
   function installHook(win, now = wallClock) {
     if (win.__recallHooked) return () => {
     };
