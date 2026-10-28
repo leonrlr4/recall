@@ -7,9 +7,10 @@ built for Taiwanese Mandarin mixed with English (transcripts come out in
 Traditional Chinese with English words kept as spoken), runs as one Rust
 daemon with a local web archive, and keeps audio on your machine.
 
-Status: phases 1 to 3 of the design are built: recording, transcription,
-speakers, summaries and the web archive. Screen recording, a Google Meet
-extension and live captions are not built yet.
+Status: phases 1 to 4 of the design are built: recording, transcription,
+speakers, summaries, the web archive, screen recording, a Google Meet
+extension that names remote speakers, and an MCP server. Live captions are
+not built yet.
 
 ## Requirements
 
@@ -22,6 +23,9 @@ extension and live captions are not built yet.
   libraries; the web UI is prebuilt in `web/dist`, so Node is not needed.
 - About 1.7 GB of disk for the models, downloaded once.
 - For summaries, a running [Ollama](https://ollama.com) or an Anthropic API key.
+- For screen recording (optional), `gpu-screen-recorder` and an
+  xdg-desktop-portal backend with screen casting.
+- For Meet speaker names (optional), Chrome, Chromium or Brave.
 
 Arch Linux:
 
@@ -90,6 +94,8 @@ recall show <id>                  # print a meeting's meeting.md
 recall rerun <id> summarize       # rerun from a step: segment, transcribe, diarize, name, summarize, write
 recall index rebuild              # rebuild the search index from the meeting folders
 recall selftest                   # record 5 s and show the level of both tracks
+recall screen off                 # stop and delete this meeting's screen video
+recall mcp                        # MCP server on stdin/stdout, see below
 recall models download
 ```
 
@@ -141,10 +147,12 @@ Each meeting is a folder under `~/Meetings/`, named by start time and title:
 
 ```
 ~/Meetings/2026-10-27 14:30 Weekly sync/
-├── meeting.md     summary, decisions, action items, chapters, transcript
-├── audio.opus     stereo: left is your microphone, right is the call
-├── meeting.json   times, source app, speaker ids, segments, step states
-└── .cache/        raw 20 s chunks while recording; removed when done
+├── meeting.md         summary, decisions, action items, chapters, transcript
+├── audio.opus         stereo: left is your microphone, right is the call
+├── meeting.json       times, source app, speaker ids, segments, step states
+├── screen.mp4         the screen, with record_screen on
+├── meet-events.jsonl  who Meet said was speaking, with the Meet extension
+└── .cache/            raw 20 s chunks while recording; removed when done
 ```
 
 `meeting.md` has YAML front matter and plain Markdown, so Obsidian and other
@@ -170,7 +178,7 @@ in the web UI edits the same file; restart the daemon
 ```toml
 meetings_dir = "/home/you/Meetings"    # absolute; ~ is not expanded
 data_dir = "/home/you/.local/share/recall"
-record_screen = false                  # not used yet
+record_screen = false                  # record the screen too; see below
 allowlist = ["brave", "chromium", "chrome", "firefox", "zoom", "slack", "discord", "teams"]
 debounce_secs = 8                      # mic must stay open this long to record
 end_grace_secs = 30                    # mic closed this long ends the recording
@@ -217,6 +225,92 @@ the Vulkan headers and the `glslc` shader compiler: `vulkan-headers` and
 `shaderc` on Arch. Without it, transcription runs on the CPU with
 `stt.threads` threads.
 
+## Google Meet speaker names
+
+The extension in `extension/` tells recall who is speaking in a Google Meet
+call, so the `name` step can put real names on the call-side speakers
+instead of matching voices alone. It is not in a store. To install it, open
+`chrome://extensions`, turn on Developer mode, choose "Load unpacked" and
+pick `extension/dist` (built and committed; rebuild with `npm ci && npm run
+build` in `extension/` after changing `src/`). Its id is fixed by the key in
+the manifest, and the daemon accepts events only from that id.
+
+On `meet.google.com` it reads:
+
+- the audio level of each remote participant's contributing source (CSRC)
+  on Meet's WebRTC receivers, polled every 100 ms, to tell who is speaking;
+- display names from the video tiles and the People panel, to put a name to
+  each source.
+
+It sends those speaking, name and roster events, with the meeting code, to
+`http://127.0.0.1:7474/api/meet/events` and nowhere else. No audio or video
+leaves the page. The daemon stores the events in the meeting's
+`meet-events.jsonl` only while it is recording, and drops them otherwise.
+The extension's address is fixed, so it stops reaching the daemon if you
+change `port`.
+
+After the call, a diarization cluster takes a Meet name when that name was
+the only one speaking for at least 60% of the cluster's overlapping speech
+and at least 30 s of it. Voices named this way join `speakers.json`, so the
+next meeting recognises them without Meet.
+
+## Screen recording
+
+With `record_screen = true` (or "Record the screen too" in the settings
+page), each recording also runs `gpu-screen-recorder` on the screen through
+xdg-desktop-portal, and the meeting page plays the video in step with the
+transcript. `ffmpeg` remuxes it into `screen.mp4` when the recording is kept;
+if the remux fails the video stays as `screen.mkv`. The screen starts with
+the recording proper, after the 8 s debounce, so the cached first seconds
+have audio only.
+
+The first recording shows the portal's picker to choose a screen. The portal
+then hands back a restore token, saved in
+`$XDG_STATE_HOME/recall/portal-token` (`~/.local/state/recall/portal-token`),
+and later recordings reuse it. On Hyprland, xdg-desktop-portal-hyprland
+shows the picker every time unless `~/.config/hypr/xdph.conf` has:
+
+```
+screencopy {
+    allow_token_by_default = true
+}
+```
+
+Restart the portal (`systemctl --user restart xdg-desktop-portal-hyprland`)
+after changing it. Delete the token file to choose a different screen.
+
+To stop recording the screen in the middle of a meeting, run
+`recall screen off` or press "Stop screen recording" in the web UI. It stops
+the video and deletes it; the audio goes on. If the screen recorder fails to
+start or exits early, a notification says so and the audio goes on.
+
+## MCP server
+
+`recall mcp` is an MCP server on stdin/stdout that lets an assistant read and
+control your meetings through the daemon's API. Add it to Claude Code with:
+
+```sh
+claude mcp add recall -- recall mcp
+```
+
+The daemon must be running; otherwise each tool replies that it is not.
+Tools:
+
+- `search_meetings`: search titles, summaries and transcripts.
+- `get_meeting`: a meeting's participants, summary, decisions, action items
+  and chapters.
+- `get_transcript`: a meeting's transcript, about 20,000 tokens per call,
+  with a cursor for the next page and an optional time range.
+- `list_action_items`: action items across meetings, by owner, due date and
+  meeting date.
+- `recording_status`: whether the recorder is idle, armed or recording.
+- `start_recording`, `stop_recording`: as `recall start` and `recall stop`.
+- `rerun_step`: process a meeting again from a step.
+- `rename_meeting`: change a meeting's title.
+- `name_speaker`: set a speaker's name everywhere.
+
+There is no tool to discard or delete a meeting.
+
 ## Privacy
 
 - The web server listens on `127.0.0.1` only and rejects requests whose `Host`
@@ -224,6 +318,8 @@ the Vulkan headers and the `glslc` shader compiler: `vulkan-headers` and
   site, so web pages you visit cannot read your archive.
 - Audio never leaves the machine. Transcription, speaker detection and voice
   matching run locally.
+- The Meet extension posts only to the local daemon. The one cross-origin
+  request the server accepts is that extension's `POST /api/meet/events`.
 - With the `ollama` backend nothing leaves the machine unless you point
   `endpoint` at another host. With the `claude` backend, the transcript text
   with speaker names is sent to the Anthropic API for each summary and each
@@ -264,7 +360,8 @@ python3 bench/run.py
 ```
 
 See [bench/README.md](bench/README.md) for the metrics and how to record new
-cases.
+cases. The `zh-en` case uses utterances from the CSZS dataset (MIT);
+[NOTICE](NOTICE) has the attribution.
 
 ## Known limitations
 
@@ -274,9 +371,17 @@ cases.
   window fixes this but doubles transcription time, so recall does not do it.
   The ignored test `whisper_keeps_repeated_speech` in
   `crates/recall-pipeline/src/transcribe.rs` reproduces it.
-- The bench cases `zh`, `zh-en` and `en-tw` have no recordings and are skipped
-  until someone records them; [bench/README.md](bench/README.md) says how.
-- Screen recording, the Google Meet extension and live captions are not built.
+- The bench cases `zh` and `en-tw` have no recordings and are skipped until
+  someone records them; [bench/README.md](bench/README.md) says how.
+- The Meet extension reads Meet's page structure, which Google changes
+  without notice; the selectors live in `extension/src/names.ts` and were
+  written without a live call to check them against. When naming breaks,
+  the status chip warns: "No speaker signal from Meet for 5 minutes"
+  (`signal_lost`) or "Meet speaker detection fell back to the video tiles"
+  (`hook_failed`). Meetings still get voice-matched names.
+- Slack, Discord, Zoom and Teams have no extension; their speakers are named
+  by voice only.
+- Live captions are not built.
 
 ## License
 
