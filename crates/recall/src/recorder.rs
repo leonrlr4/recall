@@ -25,7 +25,9 @@ use chrono::{DateTime, Local, NaiveDateTime, Utc};
 use recall_audio::capture::{Capture, Levels};
 use recall_audio::state::Action;
 use recall_audio::writer::{ChunkWriter, cache_duration, finalize};
-use recall_store::{Config, Index, Meeting, MeetingDir, MeetingId, Speakers, Step, StepState};
+use recall_store::{
+    CaptureClock, Config, Index, Meeting, MeetingDir, MeetingId, Speakers, Step, StepState,
+};
 
 use crate::notify;
 
@@ -44,6 +46,8 @@ pub trait CaptureControl: Send {
     fn is_running(&self) -> bool;
     /// Stops it and returns the first error it hit.
     fn stop(self: Box<Self>) -> Result<()>;
+    /// The wall-clock and monotonic time of the capture's origin.
+    fn clock(&self) -> CaptureClock;
 }
 
 impl CaptureControl for Capture {
@@ -53,6 +57,10 @@ impl CaptureControl for Capture {
 
     fn stop(self: Box<Self>) -> Result<()> {
         Capture::stop(*self)
+    }
+
+    fn clock(&self) -> CaptureClock {
+        Capture::clock(self)
     }
 }
 
@@ -68,6 +76,8 @@ struct Active {
     dir: MeetingDir,
     title: String,
     started: DateTime<Local>,
+    /// The capture's origin, also in `.cache/clock.json`.
+    clock: CaptureClock,
     source_app: Option<String>,
     /// Started with the hotkey, so kept whatever its length.
     by_hotkey: bool,
@@ -357,6 +367,12 @@ impl Recorder {
         self.active.as_ref().map(|active| active.started)
     }
 
+    /// The directory and origin clock of the capture in progress.
+    pub fn live(&self) -> Option<(MeetingDir, CaptureClock)> {
+        let active = self.active.as_ref()?;
+        Some((active.dir.clone(), active.clock))
+    }
+
     fn start(&mut self, now: DateTime<Local>) -> Result<()> {
         let title = format!("Meeting {}", now.format("%H:%M"));
         let dir = MeetingDir::create(&self.config.meetings_dir, now, &title)?;
@@ -377,11 +393,18 @@ impl Recorder {
             }
         };
         tracing::info!(id = dir.id.0, "capturing");
+        // Without the file the audio is still kept; only screen and Meet
+        // alignment for this recording is lost.
+        let clock = capture.clock();
+        if let Err(err) = clock.write(&dir.clock()) {
+            tracing::warn!(err = format!("{err:#}"), "writing the capture clock");
+        }
         self.capture = Some(capture);
         self.active = Some(Active {
             dir,
             title,
             started: now,
+            clock,
             source_app: None,
             by_hotkey: false,
         });
@@ -586,7 +609,16 @@ mod tests {
         fn stop(self: Box<Self>) -> Result<()> {
             Ok(())
         }
+
+        fn clock(&self) -> CaptureClock {
+            FAKE_CLOCK
+        }
     }
+
+    const FAKE_CLOCK: CaptureClock = CaptureClock {
+        wall_ms: 1_793_170_000_000,
+        monotonic_us: 5_000_000,
+    };
 
     /// Starts a [`FakeCapture`] after writing `secs` seconds of silence to
     /// both tracks.
@@ -737,5 +769,21 @@ mod tests {
         rec.apply(Action::Finish, at(3)).unwrap();
         rec.wait_keeps();
         assert_eq!(jobs(&f), 1);
+    }
+
+    #[test]
+    fn start_writes_clock_file() {
+        let f = fixture(1);
+        let mut rec = recorder(&f, 2, Arc::new(|c: &Path, o: &Path| finalize(c, o)));
+        assert!(rec.live().is_none());
+        rec.apply(Action::StartCache, at(0)).unwrap();
+
+        let (dir, clock) = rec.live().unwrap();
+        assert_eq!(clock, FAKE_CLOCK);
+        assert_eq!(CaptureClock::read(&dir.clock()).unwrap(), Some(FAKE_CLOCK));
+
+        rec.apply(Action::Finish, at(1)).unwrap();
+        assert!(rec.live().is_none());
+        rec.wait_keeps();
     }
 }

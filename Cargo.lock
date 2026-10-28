@@ -2140,6 +2140,7 @@ dependencies = [
  "pipewire",
  "recall-store",
  "rtrb",
+ "rustix",
  "serde_json",
  "tempfile",
  "tracing",

@@ -30,7 +30,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, mpsc};
 use std::thread::{JoinHandle, Thread};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use pipewire as pw;
@@ -39,6 +39,7 @@ use pw::properties::PropertiesBox;
 use pw::spa;
 use pw::stream::{StreamFlags, StreamListener, StreamRc, StreamState};
 use pw::types::ObjectType;
+use recall_store::CaptureClock;
 use rtrb::{Consumer, Producer, RingBuffer};
 use spa::param::format::{MediaSubtype, MediaType};
 use spa::param::format_utils;
@@ -85,6 +86,20 @@ impl Failure {
     }
 }
 
+/// Reads the wall clock and `CLOCK_MONOTONIC` back to back. `Instant` reads
+/// `CLOCK_MONOTONIC` on Linux, so `monotonic_us` is on the same timeline as
+/// the capture's origin and as monotonic timestamps from other processes.
+fn read_clock() -> CaptureClock {
+    let monotonic = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    CaptureClock {
+        wall_ms: wall.as_millis() as i64,
+        monotonic_us: monotonic.tv_sec * 1_000_000 + monotonic.tv_nsec / 1_000,
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -96,11 +111,13 @@ pub struct Capture {
     writer_thread: Option<JoinHandle<Result<()>>>,
     stop_writer: Arc<AtomicBool>,
     failure: Arc<Failure>,
+    clock: CaptureClock,
 }
 
 impl Capture {
     pub fn start(writer: Arc<Mutex<ChunkWriter>>, levels: Arc<Levels>) -> Result<Capture> {
         let origin = Instant::now();
+        let clock = read_clock();
         let failure = Arc::new(Failure::default());
         let stop_writer = Arc::new(AtomicBool::new(false));
         let ([mic_ring, sys_ring], writer_thread) =
@@ -121,6 +138,7 @@ impl Capture {
             writer_thread: Some(writer_thread),
             stop_writer,
             failure: failure.clone(),
+            clock,
         };
         let (ready_tx, ready_rx) = mpsc::channel();
         let pw_thread = std::thread::Builder::new()
@@ -134,6 +152,12 @@ impl Capture {
             Err(_) => Err(anyhow!("the capture thread exited during startup")),
         }
         // On error, dropping `capture` joins both threads.
+    }
+
+    /// The wall-clock and monotonic time read when the capture's origin
+    /// was taken.
+    pub fn clock(&self) -> CaptureClock {
+        self.clock
     }
 
     /// False once the PipeWire connection or the writer thread has ended on
@@ -959,6 +983,7 @@ mod tests {
             writer_thread: Some(writer_thread),
             stop_writer: stop,
             failure,
+            clock: read_clock(),
         };
         assert!(capture.is_running());
 
@@ -980,6 +1005,20 @@ mod tests {
             format!("{err:#}").contains("writing captured audio"),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn capture_clock_is_monotonic_and_wall_consistent() {
+        let clock = read_clock();
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!(
+            (now_ms - clock.wall_ms).abs() < 1000,
+            "{clock:?} vs {now_ms}"
+        );
+        assert!(clock.monotonic_us > 0, "{clock:?}");
     }
 
     #[test]

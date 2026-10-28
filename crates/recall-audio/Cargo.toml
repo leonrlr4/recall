@@ -13,6 +13,7 @@ opus = "0.4"
 # v0_3_44 exposes the `target.object` key used to follow the default sink.
 pipewire = { version = "0.10", features = ["v0_3_44"] }
 rtrb = "0.4"
+rustix = { version = "1", features = ["time"] }
 serde_json.workspace = true
 tracing.workspace = true
 
