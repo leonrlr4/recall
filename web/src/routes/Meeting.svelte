@@ -12,6 +12,7 @@
     getMeeting,
     patchMeeting,
     patchPerson,
+    people,
     rerun,
     screenUrl,
   } from '../lib/api';
@@ -19,14 +20,17 @@
   import { locale, t } from '../lib/i18n';
   import { ignoreKey } from '../lib/keys';
   import { live } from '../lib/live.svelte';
-  import { renameSuggestions } from '../lib/people';
+  import { canRenameInMeeting, renameRequest, renameSuggestions } from '../lib/people';
   import { link, meetingPath, navigate } from '../lib/router';
   import { shiftAfterDelete } from '../lib/transcript';
-  import { STEPS, type MeetingDetail, type Segment, type Step } from '../lib/types';
+  import { STEPS, type MeetingDetail, type Person, type Segment, type Step } from '../lib/types';
 
   let { id, startMs = null }: { id: string; startMs?: number | null } = $props();
 
   let detail = $state<MeetingDetail | null>(null);
+  /** The speaker registry, for which voices are still unnamed. Empty until
+   *  it loads, which offers no rename. */
+  let registry = $state<Person[]>([]);
   let error = $state<string | null>(null);
   let notice = $state<{ text: string; kind: 'ok' | 'err' } | null>(null);
 
@@ -47,11 +51,21 @@
   const segments = $derived(meeting?.segments ?? []);
 
   async function load() {
+    void loadRegistry();
     try {
       detail = await getMeeting(id);
       error = null;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function loadRegistry() {
+    try {
+      registry = await people();
+    } catch {
+      // Without the registry the page offers no rename; nothing else needs it.
+      registry = [];
     }
   }
 
@@ -166,10 +180,11 @@
     return detail ? renameSuggestions(detail.meeting.participants_hint, detail.names, speaker) : [];
   }
 
-  /** Names the person behind `speaker`, which renames them in every meeting. */
+  /** Names the unnamed voice `speaker`, or merges it into the named person
+   *  who already goes by `name`. */
   async function renameSpeaker(speaker: string, name: string) {
     try {
-      await patchPerson(speaker, { name });
+      await patchPerson(speaker, renameRequest(speaker, name, registry));
     } catch (e) {
       flash(t('meeting.save_failed', { error: e instanceof Error ? e.message : String(e) }), 'err');
       throw e;
@@ -443,7 +458,8 @@
             onsave={saveText}
             onnextspeaker={nextSpeaker}
             ondelete={deleteLine}
-            {suggestions}
+            renameable={(speaker) => canRenameInMeeting(speaker, registry)}
+          {suggestions}
             viaMeet={(speaker) => meetNamed.has(speaker)}
             onrename={renameSpeaker}
           />

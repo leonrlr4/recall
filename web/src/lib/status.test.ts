@@ -3,6 +3,7 @@ import en from '../i18n/en.json';
 import { format } from './i18n';
 import {
   canStopScreen,
+  confirmPrompt,
   recordActions,
   statusAnnouncement,
   statusChipText,
@@ -123,5 +124,18 @@ describe('status', () => {
     expect(canStopScreen(live(null, 'off'))).toBe(false);
     expect(canStopScreen(snap('recording'))).toBe(false);
     expect(canStopScreen(null)).toBe(false);
+  });
+
+  it('stop_screen_asks_before_deleting_the_video', () => {
+    expect(confirmPrompt('screen_off', t)).toEqual({
+      question: "Stop screen recording and delete this meeting's video?",
+      yes: 'Stop and delete',
+    });
+    expect(confirmPrompt('discard', t)).toEqual({
+      question: 'Discard this recording?',
+      yes: 'Discard',
+    });
+    expect(confirmPrompt('stop', t)).toBeNull();
+    expect(confirmPrompt('start', t)).toBeNull();
   });
 });

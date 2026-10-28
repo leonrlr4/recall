@@ -16,6 +16,7 @@
     onsave,
     onnextspeaker,
     ondelete,
+    renameable,
     suggestions,
     viaMeet,
     onrename,
@@ -34,11 +35,13 @@
     onsave: (index: number, text: string) => Promise<void>;
     onnextspeaker: (index: number) => void;
     ondelete: (index: number) => void;
+    /** The speaker may be named here: a voice nobody has named yet. */
+    renameable: (speaker: string) => boolean;
     /** Roster names offered as one-click choices when renaming `speaker`. */
     suggestions: (speaker: string) => string[];
     /** The speaker's name came from Google Meet. */
     viaMeet: (speaker: string) => boolean;
-    /** Renames the person `speaker` everywhere; rejects when it fails. */
+    /** Names the unnamed voice `speaker`; rejects when it fails. */
     onrename: (speaker: string, name: string) => Promise<void>;
   } = $props();
 
@@ -47,8 +50,7 @@
   let lines: HTMLElement[] = $state([]);
   let editor = $state<HTMLTextAreaElement>();
 
-  /** Line whose speaker is being renamed. `me` is renamed on the People
-   *  page, and a line without a speaker has nobody to rename. */
+  /** Line whose speaker is being named. */
   let renaming = $state<number | null>(null);
   let nameDraft = $state('');
   let renameSaving = $state(false);
@@ -63,7 +65,7 @@
     untrack(() => (renaming = null));
   });
 
-  const canRename = (seg: Segment) => !!seg.speaker && seg.speaker !== 'me';
+  const canRename = (seg: Segment) => !!seg.speaker && renameable(seg.speaker);
 
   function startRename(i: number) {
     if (busy) return;

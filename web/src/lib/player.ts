@@ -119,9 +119,10 @@ export function videoSeconds(audioMs: number, offsetMs: number): number {
   return Math.max(0, (audioMs - offsetMs) / 1000);
 }
 
-/** Audio position in milliseconds for a video position. */
+/** Audio position in milliseconds for a video position; 0 for video
+ *  recorded before the audio started. */
 export function audioMsAt(videoSec: number, offsetMs: number): number {
-  return videoSec * 1000 + offsetMs;
+  return Math.max(0, videoSec * 1000 + offsetMs);
 }
 
 /**

@@ -4,20 +4,23 @@
   import { live, sendRecord } from '../lib/live.svelte';
   import {
     canStopScreen,
+    confirmPrompt,
     recordActions,
     statusAnnouncement,
     statusChipText,
     statusNotes,
+    type ConfirmAction,
     type RecordAction,
   } from '../lib/status';
 
   let now = $state(Date.now());
   let busy = $state(false);
-  let confirming = $state(false);
+  /** The action whose inline prompt is open. */
+  let confirming = $state<ConfirmAction | null>(null);
   let error = $state<string | null>(null);
   let group: HTMLDivElement;
   let cancelButton = $state<HTMLButtonElement>();
-  const buttons: Partial<Record<RecordAction, HTMLButtonElement>> = $state({});
+  const buttons: Partial<Record<RecordAction | 'screen_off', HTMLButtonElement>> = $state({});
 
   const phase = $derived(live.snapshot?.phase ?? 'idle');
   const chip = $derived(statusChipText(live.snapshot, live.progress, now, t));
@@ -25,6 +28,7 @@
   const announcement = $derived(statusAnnouncement(live.snapshot, live.progress, t));
   const notes = $derived(statusNotes(live.snapshot, t));
   const stopScreen = $derived(canStopScreen(live.snapshot));
+  const prompt = $derived(confirming ? confirmPrompt(confirming, t) : null);
 
   // Tick the elapsed time only while recording.
   $effect(() => {
@@ -34,8 +38,8 @@
     return () => clearInterval(timer);
   });
 
-  // A discard prompt left open must not apply to a later recording, and an
-  // error from one phase says nothing about the next.
+  // A prompt left open must not apply to a later recording, and an error
+  // from one phase says nothing about the next.
   let lastPhase = untrack(() => phase);
   $effect(() => {
     if (phase === lastPhase) return;
@@ -44,18 +48,23 @@
     if (confirming) void closeConfirm();
   });
 
+  // The screen recorder can stop on its own while its prompt is open.
+  $effect(() => {
+    if (confirming === 'screen_off' && !stopScreen) void untrack(() => closeConfirm());
+  });
+
   $effect(() => {
     if (confirming) cancelButton?.focus();
   });
 
-  /** Closes the discard prompt and puts focus back on a record button. */
+  /** Closes the prompt and puts focus back on a record button. */
   async function closeConfirm() {
     const hadFocus = group.contains(document.activeElement);
-    confirming = false;
+    confirming = null;
     await tick();
     // The prompt's button was removed with it, so focus fell to the body.
     const lost = hadFocus || document.activeElement === document.body;
-    if (lost) (buttons.discard ?? buttons.stop ?? buttons.start)?.focus();
+    if (lost) (buttons.screen_off ?? buttons.discard ?? buttons.stop ?? buttons.start)?.focus();
   }
 
   function confirmKeydown(e: KeyboardEvent) {
@@ -64,6 +73,12 @@
       e.stopPropagation();
       void closeConfirm();
     }
+  }
+
+  /** Runs `action`, or opens its prompt first when it deletes something. */
+  function choose(action: RecordAction | 'screen_off') {
+    if (confirmPrompt(action, t)) confirming = action as ConfirmAction;
+    else void run(action);
   }
 
   async function run(action: RecordAction | 'screen_off') {
@@ -96,13 +111,13 @@
   {#each notes as note (note.text)}
     <span class="note {note.tone}" role="status" title={note.text}>{note.text}</span>
   {/each}
-  {#if confirming}
+  {#if confirming && prompt}
     <!-- Escape from either button cancels; the listener sits on their container. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <span class="confirm" role="alert" onkeydown={confirmKeydown}>
-      {t('status.discard_confirm')}
-      <button class="btn danger" disabled={busy} onclick={() => run('discard')}>
-        {t('status.discard_yes')}
+      {prompt.question}
+      <button class="btn danger" disabled={busy} onclick={() => confirming && run(confirming)}>
+        {prompt.yes}
       </button>
       <button class="btn" disabled={busy} bind:this={cancelButton} onclick={closeConfirm}>
         {t('common.cancel')}
@@ -115,7 +130,7 @@
         class:primary={action === 'start'}
         disabled={busy}
         bind:this={buttons[action]}
-        onclick={() => (action === 'discard' ? (confirming = true) : run(action))}
+        onclick={() => choose(action)}
       >
         {label[action]}
       </button>
@@ -125,7 +140,8 @@
         class="btn"
         disabled={busy}
         title={t('status.screen_off_help')}
-        onclick={() => run('screen_off')}
+        bind:this={buttons.screen_off}
+        onclick={() => choose('screen_off')}
       >
         {t('status.screen_off')}
       </button>

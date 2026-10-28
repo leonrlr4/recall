@@ -42,3 +42,30 @@ export function renameSuggestions(
   }
   return out;
 }
+
+/**
+ * The meeting page renames only voices nobody has named yet. A named person
+ * is renamed on the People page, where the change shows in every meeting.
+ */
+export function canRenameInMeeting(speaker: string, all: Person[]): boolean {
+  return all.some((p) => p.id === speaker && !p.named);
+}
+
+/**
+ * The `PATCH /api/people/{speaker}` body for naming an unnamed voice
+ * `name`. When a named person already goes by that name or alias (ignoring
+ * case and surrounding space), the voice is merged into them, so its lines
+ * and voice samples join theirs instead of creating a second person.
+ */
+export function renameRequest(
+  speaker: string,
+  name: string,
+  all: Person[],
+): { name: string } | { merge_into: string } {
+  const key = (s: string) => s.trim().toLocaleLowerCase();
+  const wanted = key(name);
+  const match = all.find(
+    (p) => p.id !== speaker && p.named && [p.name, ...p.aliases].some((n) => key(n) === wanted),
+  );
+  return match ? { merge_into: match.id } : { name: name.trim() };
+}

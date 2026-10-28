@@ -11,6 +11,9 @@ export type Tone = 'idle' | 'armed' | 'recording' | 'finishing' | 'processing';
 
 export type RecordAction = 'start' | 'stop' | 'discard';
 
+/** Actions that delete something and are confirmed inline first. */
+export type ConfirmAction = 'discard' | 'screen_off';
+
 type T = (key: string, params?: Record<string, string | number>) => string;
 
 /**
@@ -126,4 +129,22 @@ export function statusNotes(snapshot: Snapshot | null, t: T): StatusNote[] {
 /** The live recording's screen recorder is running and can be stopped. */
 export function canStopScreen(snapshot: Snapshot | null): boolean {
   return snapshot?.screen === 'recording';
+}
+
+/**
+ * The inline question and confirm label for an action that deletes the
+ * recording or its video; null for actions that run on one click.
+ */
+export function confirmPrompt(
+  action: RecordAction | 'screen_off',
+  t: T,
+): { question: string; yes: string } | null {
+  switch (action) {
+    case 'discard':
+      return { question: t('status.discard_confirm'), yes: t('status.discard_yes') };
+    case 'screen_off':
+      return { question: t('status.screen_off_confirm'), yes: t('status.screen_off_yes') };
+    default:
+      return null;
+  }
 }

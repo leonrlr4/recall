@@ -26,6 +26,7 @@ describe('screen video sync', () => {
     expect(videoSeconds(5_000, -500)).toBe(5.5);
     expect(videoSeconds(5_000, 0)).toBe(5);
     expect(audioMsAt(3, 2_000)).toBe(5_000);
+    expect(audioMsAt(0.2, -500)).toBe(0);
 
     // Within 300 ms nothing moves; beyond it the video jumps to the audio.
     expect(videoCorrection(3.25, 5_000, 2_000, 60)).toBeNull();

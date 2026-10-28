@@ -28,7 +28,9 @@
     "screen_error": "螢幕錄影失敗",
     "screen_picker": "下次錄影時會跳出螢幕選擇視窗",
     "screen_off": "停止螢幕錄影",
-    "screen_off_help": "停止這場會議的螢幕錄影並刪除影片，錄音會繼續。"
+    "screen_off_help": "停止這場會議的螢幕錄影並刪除影片，錄音會繼續。",
+    "screen_off_confirm": "停止螢幕錄影並刪除這場會議的影片？",
+    "screen_off_yes": "停止並刪除"
   },
   "common": {
     "loading": "載入中…",
@@ -118,8 +120,8 @@
     "edit_hint": "Enter 儲存，Esc 取消",
     "next_speaker": "換下一位講者 (s)",
     "delete": "刪除這行",
-    "rename": "重新命名這位講者",
-    "rename_label": "{name} 的新名字",
+    "rename": "為這位講者命名",
+    "rename_label": "{name} 的名字",
     "rename_hints": "這場 Meet 的參與者",
     "via_meet": "來自 Meet",
     "via_meet_help": "依 Google Meet 裡誰在發言命名"

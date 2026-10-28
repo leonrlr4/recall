@@ -28,7 +28,9 @@
     "screen_error": "Screen recording failed",
     "screen_picker": "The screen picker will appear next time",
     "screen_off": "Stop screen recording",
-    "screen_off_help": "Stops this meeting's screen recording and deletes its video. Audio keeps recording."
+    "screen_off_help": "Stops this meeting's screen recording and deletes its video. Audio keeps recording.",
+    "screen_off_confirm": "Stop screen recording and delete this meeting's video?",
+    "screen_off_yes": "Stop and delete"
   },
   "common": {
     "loading": "Loading…",
@@ -118,8 +120,8 @@
     "edit_hint": "Enter saves, Esc cancels",
     "next_speaker": "Next speaker (s)",
     "delete": "Delete line",
-    "rename": "Rename this speaker",
-    "rename_label": "New name for {name}",
+    "rename": "Name this speaker",
+    "rename_label": "Name for {name}",
     "rename_hints": "In this Meet call",
     "via_meet": "via Meet",
     "via_meet_help": "Named from who was speaking in Google Meet"
