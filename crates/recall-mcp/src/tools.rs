@@ -67,9 +67,11 @@ pub struct TranscriptArgs {
 pub struct ActionArgs {
     /// Part of the owner's name, case-insensitive.
     pub owner: Option<String>,
-    /// Meetings that started at or after this RFC 3339 time.
+    /// Meetings that started at or after this RFC 3339 time, such as
+    /// `2026-10-20T00:00:00Z`.
     pub from: Option<String>,
-    /// Meetings that started at or before this RFC 3339 time.
+    /// Meetings that started before this RFC 3339 time, such as
+    /// `2026-10-27T00:00:00Z`.
     pub to: Option<String>,
     /// Items due on or after this date (YYYY-MM-DD); leaves out items
     /// without a due date.
@@ -246,9 +248,10 @@ impl Recall {
         Ok(render_meeting(&self.meeting(&args.id).await?))
     }
 
-    /// A meeting's transcript as `[mm:ss] Name: text` lines, at most about
-    /// 20,000 tokens per call. When more remains, a second content block
-    /// gives `next_cursor`; pass it as `cursor` for the next page.
+    /// A meeting's transcript as `[mm:ss] Name: text` lines (`[h:mm:ss]`
+    /// from one hour on), at most about 20,000 tokens per call. When more
+    /// remains, a second content block gives `next_cursor`; pass it as
+    /// `cursor` for the next page.
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn get_transcript(
         &self,
