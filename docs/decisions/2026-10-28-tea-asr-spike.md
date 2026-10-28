@@ -20,7 +20,8 @@ would also mean dropping whisper-rs or running TEA in its own process.
 
 TEA ran with the `zh` hint because it scored better than auto-detection on
 the first ASCEND session (50 clips): 9.7% against 13.5% mixed error rate.
-Breeze also runs with `zh`.
+Breeze also runs with `zh`. That session (ascend-00) is also one of the
+scored sessions, so the choice slightly favours TEA on ASCEND.
 
 ### Test set
 
@@ -66,10 +67,22 @@ The 95% interval of the pooled gap, bootstrapped over the 12 sessions, is
 2.0 to 5.4 points. TEA was better in 10 of 12 sessions; it was worse in two
 CSZS sessions (by 0.5 and 1.4 points). Most of TEA's ASCEND advantage is
 deletions: Breeze drops many short spontaneous utterances that TEA keeps.
+Assigning transcript lines to clips by midpoint, 72 of the 300 ASCEND clips
+get no Breeze text and 21 get no TEA text (none on CSZS for either). That
+count is approximate for Breeze, whose diarized lines can cross clip
+boundaries.
+
+The aligner printed "alignment collapse suspected" (too many zero-length or
+zero-position words) for 21 of the 655 regions, 17 of them in ASCEND
+sessions. Those regions keep their text; only their word times are suspect,
+and MER does not use word times.
 
 Speed (measured, wall clock). Other agents were building and testing on the
 same machine throughout, with a 1-minute load average between 6 and 18 on 16
-threads, so these numbers are pessimistic for both engines:
+threads, so these numbers are pessimistic for both engines. Each row names
+its denominator: TEA rows divide by VAD speech (the audio TEA was given),
+Breeze's ASR row by the same VAD speech, and Breeze's whole-pipeline row by
+session length:
 
 | Measure | Breeze | TEA |
 |---|---|---|
@@ -84,14 +97,17 @@ Breeze's ASR time is the gap between the `segment done` and
 (0.30 to 0.54 ASR-only) than CSZS because their regions are short and each
 call has a fixed cost.
 
-Memory (measured, peak RSS from `wait4`, MiB):
+Memory (measured, peak RSS from `wait4`, MiB). `ru_maxrss` counts the
+memory-mapped pages of the model files that were touched, so part of each
+number is file-backed and reclaimable. Both engines are measured the same
+way.
 
 | Run | Peak RSS |
 |---|---|
 | Breeze `transcribe-file`, whole pipeline | 2,546 to 2,594 |
 | TEA + aligner both loaded, per-region (≤ 30 s), 12 sessions | 4,300 to 4,728 |
 | TEA alone, no aligner (one session) | 3,032 |
-| TEA over all regions, session dropped, then aligner (one CSZS session) | 2,826 |
+| TEA over all regions, session dropped, then aligner (one session, cszs-03) | 2,826 (wall 139.9 s, against 123.5 s for the same session with both loaded) |
 | TEA + aligner on one 121 s call | 7,929 |
 
 The aligner's memory grows with segment length; the pipeline never hands
@@ -118,8 +134,18 @@ would need `嗯` on silence added there.
 |---|---|---|
 | MER at least 5 points below Breeze-ASR-25 q8_0 | 3.7 points pooled (ASCEND 6.5, CSZS 2.1) | No |
 | RTF at or below 1.0 on CPU | 0.55 with the aligner, worst session 0.89 | Yes |
-| Peak memory at or below 4 GB | 4.2 to 4.6 GiB (4.5 to 5.0 GB) with both models loaded; 2.8 GiB when the aligner runs after the ASR model is freed | No as run; yes with sequential loading |
+| Peak memory at or below 4 GB | 4.2 to 4.6 GiB (4.5 to 5.0 GB) with both models loaded; 2.8 GiB when the aligner runs after the ASR model is freed (one session) | No as run; yes with sequential loading |
 | No repetition loops or empty output on silence or on segments over 30 s | No loops, no empty output on long speech; `嗯` per window on digital silence without VAD | Yes |
+
+The spec does not say whether the 5 points apply pooled or per dataset.
+The criterion fails pooled and on CSZS and passes only on ASCEND, so it
+fails under either strict reading.
+
+The verdict is close. The pooled 95% interval (2.0 to 5.4 points) contains
+5, so a larger sample could land on either side. ASCEND's 6.5 points come
+from 6 sessions and have no interval of their own, and the `zh` hint was
+picked on one of those sessions. ASCEND alone is therefore weak evidence
+that TEA clears the bar on conversation.
 
 Revisit if a test on recall's own audio shows a larger gap: the spontaneous
 conversation set (ASCEND) cleared 5 points while the synthesised one (CSZS)
