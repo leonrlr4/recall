@@ -6,8 +6,9 @@
 //! client is async), never on the daemon's runtime. Neither the shared
 //! `Index` nor the shared `Speakers` mutex is held while a step runs: the
 //! HTTP server takes both. The run works on a clone of `Speakers`; when it
-//! ends, successful or not, the people it added are inserted into the
-//! shared registry, which is then saved over what the run's Name step wrote.
+//! ends, successful or not, the people it added and the voices it enrolled
+//! are carried into the shared registry, which is then saved over what the
+//! run's Name step wrote.
 //! Edits the server made to the shared registry meanwhile are kept.
 
 use std::any::Any;
@@ -22,7 +23,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
-use recall_pipeline::runner::{Engines, run_from};
+use recall_pipeline::runner::{Engines, MAX_VOICES, run_from};
 use recall_store::{
     Config, Event, Index, Job, Meeting, MeetingDir, MeetingId, Speakers, Step, StepState,
 };
@@ -245,14 +246,26 @@ impl Worker {
 
     /// Inserts every person of the run's registry that the shared one lacks
     /// (the voices the run's Name step registered) into the shared registry,
-    /// and saves it. The shared copy wins for everyone else, so a rename
-    /// made while the run went on survives, on disk too: the Name step
-    /// saved the run's older copy.
+    /// adds to people it has any embedding the run gave them that it lacks
+    /// (a voice enrolled through Meet), keeping at most [`MAX_VOICES`], and
+    /// saves it. Otherwise the shared copy wins, so a rename made while the
+    /// run went on survives, on disk too: the Name step saved the run's
+    /// older copy.
     fn merge_speakers(&self, run: &Speakers) -> Result<()> {
         let mut shared = lock(&self.speakers);
         let mut next = shared.clone();
         for person in run.people() {
-            next.insert_person(person.clone());
+            if next.insert_person(person.clone()) {
+                continue;
+            }
+            for embedding in &person.embeddings {
+                let known = next
+                    .get(&person.id)
+                    .is_some_and(|p| p.embeddings.contains(embedding));
+                if !known {
+                    next.add_embedding(&person.id, embedding.clone(), MAX_VOICES);
+                }
+            }
         }
         next.save(&self.config.speakers_path())?;
         *shared = next;

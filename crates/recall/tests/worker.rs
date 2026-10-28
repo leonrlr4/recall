@@ -14,8 +14,8 @@ use recall_pipeline::runner::Engines;
 use recall_pipeline::{Diarizer, Region, Transcriber, Turn, Utterance, Vad};
 use recall_store::speakers::ME;
 use recall_store::{
-    Config, Event, Index, ListFilter, LlmConfig, Meeting, MeetingDir, SpeakerId, Speakers, Step,
-    StepState,
+    Config, Event, Index, ListFilter, LlmConfig, MeetEvent, MeetEventKind, Meeting, MeetingDir,
+    NamedBy, SpeakerId, Speakers, Step, StepState, append_events,
 };
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
@@ -135,6 +135,12 @@ struct Fixture {
 /// A queued 2 s meeting: a tone on the mic for the first second and on the
 /// system audio for the second.
 fn fixture() -> Fixture {
+    fixture_lasting(2)
+}
+
+/// Like [`fixture`], `secs` long, the system audio's tone lasting from the
+/// first second to the end.
+fn fixture_lasting(secs: u32) -> Fixture {
     let tmp = TempDir::new().unwrap();
     let config = Arc::new(Config {
         meetings_dir: tmp.path().join("meetings"),
@@ -142,12 +148,12 @@ fn fixture() -> Fixture {
         ..Config::default()
     });
     let dir = MeetingDir::create(&config.meetings_dir, Local::now(), "Worker test").unwrap();
-    write_audio(&dir.audio());
+    write_audio(&dir.audio(), secs);
     let meeting = Meeting {
         id: dir.id.clone(),
         title: "Worker test".into(),
         started: Utc::now(),
-        duration_ms: 2_000,
+        duration_ms: secs * 1_000,
         source_app: None,
         steps: Step::ALL.iter().map(|s| (*s, StepState::Pending)).collect(),
         segments: Vec::new(),
@@ -174,13 +180,13 @@ fn fixture() -> Fixture {
     }
 }
 
-fn write_audio(path: &Path) {
+fn write_audio(path: &Path, secs: u32) {
     let status = Command::new("ffmpeg")
         .args(["-v", "error", "-f", "lavfi", "-i"])
-        .arg(
+        .arg(format!(
             "aevalsrc=if(lt(t\\,1)\\,0.5*sin(2*PI*440*t)\\,0)\
-             |if(gte(t\\,1)\\,0.5*sin(2*PI*440*t)\\,0):s=48000:d=2",
-        )
+             |if(gte(t\\,1)\\,0.5*sin(2*PI*440*t)\\,0):s=48000:d={secs}"
+        ))
         .args(["-c:a", "libopus", "-b:a", "64k"])
         .arg(path)
         .status()
@@ -512,4 +518,57 @@ fn panicking_job_is_failed_keeps_its_voices_and_the_worker_goes_on() {
     assert!(on_disk.get(&remote).is_some());
     assert_eq!(f.index.lock().unwrap().active_job(&f.dir.id).unwrap(), None);
     assert!(!worker.run_next(&runtime(), &mut engines).unwrap());
+}
+
+#[test]
+fn voice_enrolled_through_meet_reaches_the_shared_registry() {
+    // 40 s, so the remote voice has the 30 s of Meet speech a name needs.
+    let f = fixture_lasting(40);
+    let tom = f
+        .speakers
+        .lock()
+        .unwrap()
+        .add("Tom", Some(vec![1.0, 0.0, 0.0]));
+    let participant = || "csrc:1".to_string();
+    append_events(
+        &f.dir.meet_events(),
+        &[
+            MeetEvent {
+                t: 0,
+                kind: MeetEventKind::Name {
+                    participant: participant(),
+                    name: "Tom".into(),
+                },
+            },
+            MeetEvent {
+                t: 0,
+                kind: MeetEventKind::SpeakingStart {
+                    participant: participant(),
+                },
+            },
+            MeetEvent {
+                t: 40_000,
+                kind: MeetEventKind::SpeakingStop {
+                    participant: participant(),
+                },
+            },
+        ],
+    )
+    .unwrap();
+    let mut worker = worker(&f, false);
+
+    assert!(worker.run_next(&runtime(), &mut None).unwrap());
+    assert_eq!(state(&f), "done");
+
+    let cluster = &Meeting::load(&f.dir.path()).unwrap().clusters[0];
+    assert_eq!(cluster.speaker, Some(tom.clone()));
+    assert_eq!(cluster.named_by, Some(NamedBy::Meet));
+    // The fake diarizer's voice is added to Tom's own.
+    let voices = [vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
+    assert_eq!(
+        f.speakers.lock().unwrap().get(&tom).unwrap().embeddings,
+        voices
+    );
+    let on_disk = Speakers::load(&f.config.speakers_path()).unwrap();
+    assert_eq!(on_disk.get(&tom).unwrap().embeddings, voices);
 }

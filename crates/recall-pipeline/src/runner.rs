@@ -35,8 +35,9 @@ const MAX_REGION_MS: u32 = 30_000;
 /// Cosine similarity a cluster needs to be named after a known person.
 const NAME_THRESHOLD: f32 = 0.6;
 /// Most voice embeddings kept per person when a cluster named through Meet
-/// enrols its voice.
-const MAX_VOICES: usize = 10;
+/// enrols its voice, and when the daemon carries that voice into its shared
+/// registry.
+pub const MAX_VOICES: usize = 10;
 
 /// The models one pipeline run uses.
 pub struct Engines {
