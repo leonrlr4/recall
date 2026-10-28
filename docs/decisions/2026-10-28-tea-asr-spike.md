@@ -80,16 +80,17 @@ and MER does not use word times.
 Speed (measured, wall clock). Other agents were building and testing on the
 same machine throughout, with a 1-minute load average between 6 and 18 on 16
 threads, so these numbers are pessimistic for both engines. Each row names
-its denominator: TEA rows divide by VAD speech (the audio TEA was given),
-Breeze's ASR row by the same VAD speech, and Breeze's whole-pipeline row by
-session length:
+its denominator: TEA's session rows divide by VAD speech (the audio TEA was
+given), Breeze's ASR row by the same VAD speech, Breeze's whole-pipeline row
+by session length, and TEA's single-call row, run in whole mode on
+continuous clips without VAD, by clip length:
 
 | Measure | Breeze | TEA |
 |---|---|---|
 | ASR seconds / VAD speech seconds, all 12 sessions | 0.66 (0.58 without one outlier session at 2.10) | 0.34 |
 | ASR + aligner / VAD speech | | 0.55 (worst session 0.89) |
 | Whole `transcribe-file` (VAD, ASR, diarization, naming) / session length | 0.45 | |
-| Single call on continuous speech of 37 to 121 s, ASR + aligner | | 0.40 to 0.53 |
+| Single call on continuous speech of 37 to 121 s, ASR + aligner / clip length | | 0.40 to 0.53 |
 | CPU seconds for all 12 sessions | 11,148 (whole pipeline) | 6,184 (ASR + aligner) |
 
 Breeze's ASR time is the gap between the `segment done` and
