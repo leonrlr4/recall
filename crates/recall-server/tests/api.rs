@@ -13,10 +13,10 @@ use async_trait::async_trait;
 use chrono::{Local, TimeZone, Utc};
 use futures_util::StreamExt;
 use recall_llm::Llm;
-use recall_server::{AppState, SelfTestResult, StatusSnapshot, build_router};
+use recall_server::{AppState, EXTENSION_ORIGIN, SelfTestResult, StatusSnapshot, build_router};
 use recall_store::{
-    Config, Event, Index, Meeting, MeetingDir, MeetingId, Segment, Side, SpeakerId, Speakers, Step,
-    StepState, markdown,
+    ActionItem, Config, Event, Index, MeetBatch, Meeting, MeetingDir, MeetingId, Segment, Side,
+    SpeakerId, Speakers, Step, StepState, Summary, markdown,
 };
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
@@ -48,6 +48,7 @@ struct Harness {
     config: Arc<Config>,
     state: AppState,
     reruns: Arc<Mutex<Vec<(MeetingId, Step)>>>,
+    meet_batches: Arc<Mutex<Vec<MeetBatch>>>,
     alice: SpeakerId,
 }
 
@@ -148,6 +149,8 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
 
     let reruns: Arc<Mutex<Vec<(MeetingId, Step)>>> = Arc::default();
     let recorded = reruns.clone();
+    let meet_batches: Arc<Mutex<Vec<MeetBatch>>> = Arc::default();
+    let received = meet_batches.clone();
     let (events, _) = broadcast::channel(16);
     let state = AppState {
         config: config.clone(),
@@ -162,6 +165,8 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
             source_app: None,
             mic_peak: 0.0,
             sys_peak: 0.0,
+            meet: None,
+            screen: None,
         })),
         control: Arc::new(|_| Ok(())),
         selftest: Arc::new(|| {
@@ -174,6 +179,11 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
             recorded.lock().unwrap().push((id.clone(), step));
             Ok(1)
         }),
+        meet: Arc::new(move |batch: MeetBatch| {
+            let n = batch.events.len();
+            received.lock().unwrap().push(batch);
+            Ok(n)
+        }),
     };
 
     let router = build_router(state.clone());
@@ -185,6 +195,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
         config,
         state,
         reruns,
+        meet_batches,
         alice,
     }
 }
@@ -818,4 +829,225 @@ async fn people_patch_refuses_while_a_job_runs() {
     assert_eq!(res.status(), 409);
     let saved = Speakers::load(&h.config.speakers_path()).unwrap();
     assert_eq!(saved.name_of(&h.alice), "Alice");
+}
+
+const MEET_BODY: &str = r#"{"meeting_code": "abc-defg-hij", "events": [
+    {"t": 1793170000123, "kind": "speaking_start", "participant": "csrc:12345"}]}"#;
+
+#[tokio::test]
+async fn extension_origin_allowed_only_on_meet_events() {
+    let h = harness().await;
+    let client = reqwest::Client::new();
+    let post = |path: &str, origin: &str| {
+        client
+            .post(h.url(path))
+            .header("Origin", origin)
+            .header("Content-Type", "application/json")
+            .body(MEET_BODY)
+            .send()
+    };
+
+    let res = post("/api/meet/events", EXTENSION_ORIGIN).await.unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(
+        res.headers()["access-control-allow-origin"],
+        EXTENSION_ORIGIN
+    );
+    {
+        let batches = h.meet_batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].meeting_code, "abc-defg-hij");
+    }
+
+    let res = post("/api/record/start", EXTENSION_ORIGIN).await.unwrap();
+    assert_eq!(res.status(), 403);
+    let res = post("/api/meet/events", "chrome-extension://otherid")
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+    let res = post("/api/meet/events", "https://meet.google.com")
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+    // The Host must still be loopback.
+    let res = client
+        .post(h.url("/api/meet/events"))
+        .header("Origin", EXTENSION_ORIGIN)
+        .header("Host", "evil.example")
+        .body(MEET_BODY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+    // Without an Origin it is an ordinary same-origin request.
+    let res = client
+        .post(h.url("/api/meet/events"))
+        .body(MEET_BODY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert!(res.headers().get("access-control-allow-origin").is_none());
+    assert_eq!(h.meet_batches.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn extension_preflight_is_answered() {
+    let h = harness().await;
+    let client = reqwest::Client::new();
+    let preflight = |path: &str, origin: &str| {
+        client
+            .request(reqwest::Method::OPTIONS, h.url(path))
+            .header("Origin", origin)
+            .header("Access-Control-Request-Method", "POST")
+            .header("Access-Control-Request-Headers", "content-type")
+            .send()
+    };
+
+    let res = preflight("/api/meet/events", EXTENSION_ORIGIN)
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let headers = res.headers();
+    assert_eq!(headers["access-control-allow-origin"], EXTENSION_ORIGIN);
+    assert_eq!(headers["access-control-allow-methods"], "POST");
+    assert_eq!(headers["access-control-allow-headers"], "Content-Type");
+    assert!(h.meet_batches.lock().unwrap().is_empty());
+
+    let res = preflight("/api/record/start", EXTENSION_ORIGIN)
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+    let res = preflight("/api/meet/events", "chrome-extension://otherid")
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+}
+
+#[tokio::test]
+async fn meet_events_rejects_bad_body() {
+    let h = harness().await;
+    let client = reqwest::Client::new();
+    for body in [
+        "not json",
+        "{}",
+        r#"{"meeting_code": "abc", "events": [{"kind": "status", "status": "ok"}]}"#,
+        r#"{"meeting_code": "abc", "events": [{"t": "soon", "kind": "status"}]}"#,
+        "[]",
+        "",
+    ] {
+        let res = client
+            .post(h.url("/api/meet/events"))
+            .header("Origin", EXTENSION_ORIGIN)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{body:?}");
+    }
+    assert!(h.meet_batches.lock().unwrap().is_empty());
+}
+
+fn set_actions(h: &Harness, id: &str, actions: Vec<ActionItem>) {
+    let path = h.meeting_path(id);
+    let mut meeting = Meeting::load(&path).unwrap();
+    meeting.summary = Some(Summary {
+        one_line: String::new(),
+        body: String::new(),
+        decisions: Vec::new(),
+        actions,
+        chapters: Vec::new(),
+    });
+    meeting.save(&path).unwrap();
+}
+
+fn action(text: &str, owner: Option<&str>, due: Option<&str>) -> ActionItem {
+    ActionItem {
+        text: text.into(),
+        owner: owner.map(Into::into),
+        due: due.map(Into::into),
+    }
+}
+
+#[tokio::test]
+async fn action_items_filters_by_owner_and_due() {
+    let h = harness().await;
+    set_actions(
+        &h,
+        WEEKLY,
+        vec![
+            action("Write release notes", Some("Leon"), Some("2026-10-30")),
+            action("Book the room", None, None),
+        ],
+    );
+    set_actions(
+        &h,
+        REVIEW,
+        vec![
+            action("Update the mockups", Some("Amy Chen"), Some("2026-11-05")),
+            action("Check contrast", Some("leon"), None),
+        ],
+    );
+    let get = |query: &str| {
+        let url = h.url(&format!("/api/action-items{query}"));
+        async move {
+            let res = reqwest::get(url).await.unwrap();
+            assert_eq!(res.status(), 200);
+            let items: Vec<Value> = res.json().await.unwrap();
+            items
+                .iter()
+                .map(|i| i["text"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+
+    // Newest meeting first, items in summary order.
+    assert_eq!(
+        get("").await,
+        [
+            "Update the mockups",
+            "Check contrast",
+            "Write release notes",
+            "Book the room"
+        ]
+    );
+    let all: Vec<Value> = reqwest::get(h.url("/api/action-items"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(all[0]["meeting"], REVIEW);
+    assert_eq!(all[0]["title"], "Design review");
+    assert_eq!(all[0]["owner"], "Amy Chen");
+    assert_eq!(all[0]["due"], "2026-11-05");
+    assert!(
+        all[0]["started"]
+            .as_str()
+            .unwrap()
+            .starts_with("2026-10-27")
+    );
+    assert_eq!(all[3]["owner"], Value::Null);
+    assert_eq!(all[3]["due"], Value::Null);
+
+    assert_eq!(
+        get("?owner=LEON").await,
+        ["Check contrast", "Write release notes"]
+    );
+    assert_eq!(get("?owner=chen").await, ["Update the mockups"]);
+    assert_eq!(get("?owner=").await.len(), 4);
+    // A due bound leaves out items without a due date.
+    assert_eq!(get("?due_from=2026-10-31").await, ["Update the mockups"]);
+    assert_eq!(get("?due_to=2026-10-30").await, ["Write release notes"]);
+    assert_eq!(
+        get("?owner=leon&due_from=2026-10-01&due_to=2026-12-31").await,
+        ["Write release notes"]
+    );
+    // Both sample meetings started at 06:30 UTC.
+    assert!(get("?to=2026-10-27T06:00:00Z").await.is_empty());
+    assert_eq!(
+        get("?from=2026-10-27T06:00:00Z&to=2026-10-27T07:00:00Z&owner=amy").await,
+        ["Update the mockups"]
+    );
 }

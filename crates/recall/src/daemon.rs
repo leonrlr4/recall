@@ -6,7 +6,8 @@
 //! threads. Finished recordings are encoded on threads of their own (see
 //! [`Recorder::poll_keeps`]), which shutdown waits for. Everything else
 //! talks to the recorder by sending [`DetectEvent`]s into its channel and
-//! reads its [`StatusSnapshot`].
+//! reads its [`StatusSnapshot`] and the live recording it publishes in a
+//! [`LiveSlot`].
 //!
 //! The worker is another plain thread (see [`crate::worker`]). It is never
 //! joined: stopping the daemon does not wait for a transcription that can
@@ -31,6 +32,7 @@ use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
 use crate::control;
+use crate::meet_sink::{LiveSlot, MeetSink, Seen};
 use crate::notify;
 use crate::recorder::Recorder;
 use crate::selftest;
@@ -96,7 +98,10 @@ pub async fn run(config: Config) -> Result<()> {
         source_app: None,
         mic_peak: 0.0,
         sys_peak: 0.0,
+        meet: None,
+        screen: None,
     }));
+    let live = Arc::new(LiveSlot::default());
     let (events, _) = broadcast::channel(EVENT_BUFFER);
     let (wake, woken) = mpsc::channel();
     // Detached; see the module docs.
@@ -119,13 +124,15 @@ pub async fn run(config: Config) -> Result<()> {
         let config = config.clone();
         let tx = tx.clone();
         let status = status.clone();
+        let live = live.clone();
         let shutdown = shutdown.clone();
         let events = events.clone();
         std::thread::Builder::new()
             .name("recall-recorder".into())
             .spawn(move || {
+                let reporter = StatusReporter::new(&status, &live);
                 let result =
-                    recorder_loop(&config, recorder, &rx, &tx, &status, &events, &shutdown);
+                    recorder_loop(&config, recorder, &rx, &tx, reporter, &events, &shutdown);
                 let _ = done_tx.send(result);
             })
             .context("spawning the recorder thread")?
@@ -159,6 +166,18 @@ pub async fn run(config: Config) -> Result<()> {
                     .enqueue(id, step)?;
                 let _ = wake.send(());
                 Ok(job)
+            })
+        },
+        meet: {
+            let status = status.clone();
+            let seen = Arc::new(Mutex::new(Seen::default()));
+            Arc::new(move |batch| {
+                MeetSink {
+                    live: &live,
+                    status: &status,
+                    seen: &seen,
+                }
+                .accept(batch)
             })
         },
     };
@@ -250,7 +269,7 @@ fn recorder_loop(
     mut recorder: Recorder,
     rx: &Receiver<DetectEvent>,
     tx: &Sender<DetectEvent>,
-    status: &RwLock<StatusSnapshot>,
+    mut reporter: StatusReporter,
     events: &broadcast::Sender<Event>,
     shutdown: &AtomicBool,
 ) -> Result<()> {
@@ -267,7 +286,6 @@ fn recorder_loop(
             restart_detector(tx, shutdown, &mut deaths)?
         }
     };
-    let mut reporter = StatusReporter::new(status);
     let mut next_tick = Instant::now();
     let mut failure = None;
 
@@ -322,6 +340,7 @@ fn recorder_loop(
             apply(&mut recorder, events, Action::Finish);
         }
         Phase::Armed { .. } => {
+            reporter.end_live();
             apply(&mut recorder, events, Action::Discard);
         }
         Phase::Idle => {}
@@ -346,8 +365,10 @@ fn step(
         Action::StartCache => Some(session.pending_app().unwrap_or("the microphone").to_owned()),
         _ => None,
     };
-    if action == Action::Finish {
-        reporter.finishing();
+    match action {
+        Action::Finish => reporter.finishing(),
+        Action::Discard => reporter.end_live(),
+        _ => {}
     }
     if !apply(recorder, events, action)
         && let Some(app) = app
@@ -448,9 +469,11 @@ impl DeathWindow {
     }
 }
 
-/// Publishes the recorder's state to the shared snapshot and `state.json`.
+/// Publishes the recorder's state to the shared snapshot and `state.json`,
+/// and the recording in progress to the [`LiveSlot`] the Meet sink reads.
 struct StatusReporter<'a> {
     status: &'a RwLock<StatusSnapshot>,
+    live: &'a LiveSlot,
     state_path: std::path::PathBuf,
     last: StatusSnapshot,
     /// Set once a failed capture start has been notified, until a capture
@@ -459,13 +482,14 @@ struct StatusReporter<'a> {
 }
 
 impl<'a> StatusReporter<'a> {
-    fn new(status: &'a RwLock<StatusSnapshot>) -> Self {
+    fn new(status: &'a RwLock<StatusSnapshot>, live: &'a LiveSlot) -> Self {
         let last = status
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let reporter = Self {
             status,
+            live,
             state_path: notify::state_path(),
             last,
             start_failed: false,
@@ -480,6 +504,12 @@ impl<'a> StatusReporter<'a> {
             Phase::Armed { .. } => "armed",
             Phase::Recording { .. } => "recording",
         };
+        let current = recorder.live();
+        let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+        if *live != current {
+            *live = current;
+        }
+        drop(live);
         let (mic_peak, sys_peak) = recorder.peaks();
         let since_ms = match (phase, recorder.started()) {
             // A recording counts from when its capture started, armed time
@@ -494,11 +524,21 @@ impl<'a> StatusReporter<'a> {
             source_app: recorder.source_app().map(str::to_owned),
             mic_peak,
             sys_peak,
+            meet: None,
+            screen: None,
         });
+    }
+
+    /// Empties the [`LiveSlot`] before a recording is finished or
+    /// discarded. It waits for a Meet batch being written, and no later one
+    /// writes to this recording's directory.
+    fn end_live(&self) {
+        *self.live.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// Shown while a finished recording is encoded and saved.
     fn finishing(&mut self) {
+        self.end_live();
         let snapshot = StatusSnapshot {
             phase: "finishing".into(),
             since_ms: unix_ms(Local::now()),
@@ -509,11 +549,14 @@ impl<'a> StatusReporter<'a> {
         self.publish(snapshot);
     }
 
-    fn publish(&mut self, snapshot: StatusSnapshot) {
+    fn publish(&mut self, mut snapshot: StatusSnapshot) {
+        let mut shared = self.status.write().unwrap_or_else(PoisonError::into_inner);
+        carry_shared(&mut snapshot, &shared);
         if snapshot == self.last {
             return;
         }
-        *self.status.write().unwrap_or_else(PoisonError::into_inner) = snapshot.clone();
+        *shared = snapshot.clone();
+        drop(shared);
         self.last = snapshot;
         self.write_file();
     }
@@ -523,6 +566,20 @@ impl<'a> StatusReporter<'a> {
             tracing::warn!(err = format!("{err:#}"), "writing the state file");
         }
     }
+}
+
+/// Copies into the recorder's `snapshot` the fields others write to the
+/// shared one: `meet` (set by the Meet sink, kept only while recording, so
+/// it clears when a recording ends) and `screen`. The caller holds the write
+/// lock across this and the store, so neither writer loses the other's
+/// update.
+fn carry_shared(snapshot: &mut StatusSnapshot, shared: &StatusSnapshot) {
+    snapshot.meet = if snapshot.phase == "recording" {
+        shared.meet.clone()
+    } else {
+        None
+    };
+    snapshot.screen = shared.screen.clone();
 }
 
 fn unix_ms(t: DateTime<Local>) -> u64 {
@@ -540,6 +597,37 @@ fn remove_file(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meet_status_is_kept_only_while_recording() {
+        let shared = StatusSnapshot {
+            phase: "recording".into(),
+            since_ms: 1,
+            source_app: Some("brave".into()),
+            mic_peak: 0.0,
+            sys_peak: 0.0,
+            meet: Some("signal_lost".into()),
+            screen: Some("recording".into()),
+        };
+        let mut next = StatusSnapshot {
+            mic_peak: 0.5,
+            meet: None,
+            screen: None,
+            ..shared.clone()
+        };
+        carry_shared(&mut next, &shared);
+        assert_eq!(next.meet.as_deref(), Some("signal_lost"));
+        assert_eq!(next.screen.as_deref(), Some("recording"));
+
+        for phase in ["finishing", "idle", "armed"] {
+            let mut next = StatusSnapshot {
+                phase: phase.into(),
+                ..next.clone()
+            };
+            carry_shared(&mut next, &shared);
+            assert_eq!(next.meet, None, "{phase}");
+        }
+    }
 
     #[test]
     fn death_window_allows_five_deaths_a_minute() {

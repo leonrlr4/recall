@@ -118,6 +118,8 @@ mod tests {
             source_app: None,
             mic_peak: 0.0,
             sys_peak: 0.0,
+            meet: None,
+            screen: None,
         };
         write_state(&path, &snapshot).unwrap();
         snapshot.phase = "recording".into();

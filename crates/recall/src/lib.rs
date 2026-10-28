@@ -2,6 +2,7 @@
 
 pub mod control;
 pub mod daemon;
+pub mod meet_sink;
 pub mod notify;
 pub mod recorder;
 pub mod selftest;

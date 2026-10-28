@@ -2,11 +2,13 @@
 //! events, meeting audio, and the embedded single-page app for every other
 //! path.
 
+mod actions;
 mod ask;
 mod audio;
 mod control;
 mod error;
 mod events;
+mod meet;
 mod meetings;
 mod people;
 mod static_files;
@@ -18,12 +20,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use anyhow::Context;
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use recall_llm::Llm;
-use recall_store::{Config, Event, Index, MeetingId, Speakers, Step};
+use recall_store::{Config, Event, Index, MeetBatch, MeetingId, Speakers, Step};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -36,6 +38,13 @@ pub struct StatusSnapshot {
     pub source_app: Option<String>,
     pub mic_peak: f32,
     pub sys_peak: f32,
+    /// The latest `status` the Meet extension sent during this recording
+    /// (e.g. `"signal_lost"`); `None` outside a recording.
+    #[serde(default)]
+    pub meet: Option<String>,
+    /// The screen recording's state during this recording.
+    #[serde(default)]
+    pub screen: Option<String>,
 }
 
 /// A request from the UI to the recorder.
@@ -59,6 +68,15 @@ pub type ControlFn = dyn Fn(ControlCommand) -> anyhow::Result<()> + Send + Sync;
 pub type SelfTestFn = dyn Fn() -> anyhow::Result<SelfTestResult> + Send + Sync;
 /// Queues reprocessing of a meeting from a step and returns the job id.
 pub type RerunFn = dyn Fn(&MeetingId, Step) -> anyhow::Result<i64> + Send + Sync;
+/// Stores a batch of Meet events on the live recording's timeline and
+/// returns how many it stored.
+pub type MeetSinkFn = dyn Fn(MeetBatch) -> anyhow::Result<usize> + Send + Sync;
+
+/// The Meet extension's origin. Its id is pinned by the `key` in its
+/// manifest, so it is the same on every machine.
+pub const EXTENSION_ORIGIN: &str = "chrome-extension://oiejafpeoacoblcpomkoloaibfmdfnhd";
+/// The one route [`EXTENSION_ORIGIN`] may call.
+const MEET_EVENTS_PATH: &str = "/api/meet/events";
 
 /// Everything the handlers share. The binary wires the recorder and the job
 /// queue in through the closures, so this crate does not depend on them.
@@ -79,6 +97,7 @@ pub struct AppState {
     pub control: Arc<ControlFn>,
     pub selftest: Arc<SelfTestFn>,
     pub rerun: Arc<RerunFn>,
+    pub meet: Arc<MeetSinkFn>,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -98,6 +117,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/status", get(control::status))
         .route("/record/{action}", post(control::record))
         .route("/selftest", post(control::selftest))
+        .route("/meet/events", post(meet::events))
+        .route("/action-items", get(actions::list))
         .route("/config", get(control::get_config).put(control::put_config))
         .route("/events", get(events::stream))
         .fallback(error::not_found);
@@ -118,11 +139,43 @@ pub fn build_router(state: AppState) -> Router {
 /// preflight, and DNS rebinding lets it read responses under its own host
 /// name.
 ///
+/// The one exception is [`EXTENSION_ORIGIN`] on `POST /api/meet/events`
+/// (Host still loopback). Its response carries
+/// `Access-Control-Allow-Origin`, and its CORS preflight, which Brave sends
+/// when the user has withheld the extension's site access, is answered
+/// here with 204.
+///
 /// `<port>` is always `config.port`, which must therefore be the port the
 /// listener is bound to; tests bind first and put the bound port in the
 /// config.
 async fn same_origin_only(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    if !is_same_origin(request.headers(), state.config.port) {
+    let port = state.config.port;
+    if is_extension_request(&request, port) {
+        let origin = HeaderValue::from_static(EXTENSION_ORIGIN);
+        if request.method() == Method::OPTIONS {
+            return (
+                StatusCode::NO_CONTENT,
+                [
+                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+                    (
+                        header::ACCESS_CONTROL_ALLOW_METHODS,
+                        HeaderValue::from_static("POST"),
+                    ),
+                    (
+                        header::ACCESS_CONTROL_ALLOW_HEADERS,
+                        HeaderValue::from_static("Content-Type"),
+                    ),
+                ],
+            )
+                .into_response();
+        }
+        let mut response = next.run(request).await;
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        return response;
+    }
+    if !is_same_origin(request.headers(), port) {
         return (
             StatusCode::FORBIDDEN,
             "cross-origin requests are not allowed",
@@ -132,17 +185,37 @@ async fn same_origin_only(State(state): State<AppState>, request: Request, next:
     next.run(request).await
 }
 
+fn loopback_hosts(port: u16) -> [String; 2] {
+    [format!("127.0.0.1:{port}"), format!("localhost:{port}")]
+}
+
+fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
+    headers.get(name).map(|v| v.to_str().unwrap_or_default())
+}
+
+fn is_loopback_host(headers: &HeaderMap, hosts: &[String]) -> bool {
+    header_str(headers, header::HOST)
+        .is_some_and(|h| hosts.iter().any(|a| a.eq_ignore_ascii_case(h)))
+}
+
 fn is_same_origin(headers: &HeaderMap, port: u16) -> bool {
-    let hosts = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
-    let get = |name| headers.get(name).map(|v| v.to_str().unwrap_or_default());
-    let host_ok =
-        get(header::HOST).is_some_and(|h| hosts.iter().any(|a| a.eq_ignore_ascii_case(h)));
-    let origin_ok = get(header::ORIGIN).is_none_or(|o| {
+    let hosts = loopback_hosts(port);
+    let origin_ok = header_str(headers, header::ORIGIN).is_none_or(|o| {
         hosts
             .iter()
             .any(|a| o.eq_ignore_ascii_case(&format!("http://{a}")))
     });
-    host_ok && origin_ok
+    is_loopback_host(headers, &hosts) && origin_ok
+}
+
+/// `POST` (or its preflight `OPTIONS`) to `/api/meet/events` from exactly
+/// [`EXTENSION_ORIGIN`], addressed to a loopback Host.
+fn is_extension_request(request: &Request, port: u16) -> bool {
+    let headers = request.headers();
+    (request.method() == Method::POST || request.method() == Method::OPTIONS)
+        && request.uri().path() == MEET_EVENTS_PATH
+        && header_str(headers, header::ORIGIN) == Some(EXTENSION_ORIGIN)
+        && is_loopback_host(headers, &loopback_hosts(port))
 }
 
 /// Serves the app on `127.0.0.1:<config.port>` until the process exits. The

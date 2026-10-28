@@ -197,6 +197,8 @@ mod tests {
             source_app: Some("brave".into()),
             mic_peak: 0.5,
             sys_peak: 0.25,
+            meet: None,
+            screen: None,
         }
     }
 

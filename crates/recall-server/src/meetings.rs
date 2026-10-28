@@ -86,7 +86,7 @@ pub struct ListResponse {
 }
 
 /// An empty query parameter (`?app=`) means no filter.
-fn non_empty(s: Option<String>) -> Option<String> {
+pub(crate) fn non_empty(s: Option<String>) -> Option<String> {
     s.filter(|s| !s.trim().is_empty())
 }
 

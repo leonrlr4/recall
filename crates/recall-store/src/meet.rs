@@ -9,15 +9,30 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// What happened in the call. `participant` is the extension's stable id for
-/// a remote stream, e.g. `"csrc:12345"`.
+/// a remote stream, e.g. `"csrc:12345"`. A kind this version does not know
+/// (from a newer extension) parses as `Unknown`, so it costs only itself,
+/// not the batch it came in; `Unknown` events are never stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MeetEventKind {
-    SpeakingStart { participant: String },
-    SpeakingStop { participant: String },
-    Name { participant: String, name: String },
-    Roster { names: Vec<String> },
-    Status { status: String },
+    SpeakingStart {
+        participant: String,
+    },
+    SpeakingStop {
+        participant: String,
+    },
+    Name {
+        participant: String,
+        name: String,
+    },
+    Roster {
+        names: Vec<String>,
+    },
+    Status {
+        status: String,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 /// One event. `t` is Unix milliseconds on the wire and milliseconds from the
@@ -53,7 +68,7 @@ pub fn append_events(path: &Path, events: &[MeetEvent]) -> Result<()> {
 
 /// Reads every event in `path`, in file order. A missing file has no events;
 /// a line that does not parse is skipped with a warning, so one torn write
-/// does not lose the rest.
+/// does not lose the rest, and an `Unknown` event is skipped silently.
 pub fn read_events(path: &Path) -> Result<Vec<MeetEvent>> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -66,6 +81,10 @@ pub fn read_events(path: &Path) -> Result<Vec<MeetEvent>> {
             continue;
         }
         match serde_json::from_str(line) {
+            Ok(MeetEvent {
+                kind: MeetEventKind::Unknown,
+                ..
+            }) => {}
             Ok(event) => events.push(event),
             Err(e) => {
                 tracing::warn!("skipping {} line {}: {e}", path.display(), n + 1);
@@ -129,6 +148,27 @@ mod tests {
         );
         let original: serde_json::Value = serde_json::from_str(SPEC_BATCH).unwrap();
         assert_eq!(serde_json::to_value(&batch).unwrap(), original);
+    }
+
+    #[test]
+    fn unknown_kind_parses_without_failing_the_batch() {
+        let batch: MeetBatch = serde_json::from_str(
+            r#"{"meeting_code": "abc-defg-hij", "events": [
+                {"t": 1, "kind": "hand_raised", "participant": "csrc:1", "extra": [1, 2]},
+                {"t": 2, "kind": "status", "status": "ok"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(batch.events[0].kind, MeetEventKind::Unknown);
+        assert_eq!(batch.events[0].t, 1);
+        assert_eq!(
+            batch.events[1].kind,
+            MeetEventKind::Status {
+                status: "ok".into()
+            }
+        );
+        // A known kind with missing fields is still an error.
+        assert!(serde_json::from_str::<MeetEvent>(r#"{"t": 1, "kind": "name"}"#).is_err());
+        assert!(serde_json::from_str::<MeetEvent>(r#"{"t": 1}"#).is_err());
     }
 
     #[test]
