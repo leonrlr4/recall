@@ -154,6 +154,9 @@ fn fixture() -> Fixture {
         clusters: Vec::new(),
         summary: None,
         models: BTreeMap::new(),
+        participants_hint: Vec::new(),
+        screen_offset_ms: None,
+        screen_error: None,
     };
     meeting.save(&dir.path()).unwrap();
     let speakers = Speakers::default();

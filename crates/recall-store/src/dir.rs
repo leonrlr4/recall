@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDateTime};
+use serde::{Deserialize, Serialize};
 
 use crate::meeting::MeetingId;
 
@@ -17,6 +18,11 @@ const MEETING_JSON: &str = "meeting.json";
 const AUDIO: &str = "audio.opus";
 const MARKDOWN: &str = "meeting.md";
 const CACHE: &str = ".cache";
+const MEET_EVENTS: &str = "meet-events.jsonl";
+const SCREEN: &str = "screen.mp4";
+/// Screen capture while recording, remuxed into `screen.mp4` afterwards.
+const SCREEN_CACHE: &str = "screen.mkv";
+const CLOCK: &str = "clock.json";
 /// Raw capture chunks in the cache; their presence means a recording never
 /// finished encoding.
 const CACHE_EXT: &str = "f32";
@@ -121,6 +127,22 @@ impl MeetingDir {
         self.path().join(CACHE)
     }
 
+    pub fn meet_events(&self) -> PathBuf {
+        self.path().join(MEET_EVENTS)
+    }
+
+    pub fn screen(&self) -> PathBuf {
+        self.path().join(SCREEN)
+    }
+
+    pub fn screen_cache(&self) -> PathBuf {
+        self.cache().join(SCREEN_CACHE)
+    }
+
+    pub fn clock(&self) -> PathBuf {
+        self.cache().join(CLOCK)
+    }
+
     /// True when `.cache/` holds at least one `*.f32` capture chunk.
     pub fn has_unfinished_cache(&self) -> bool {
         let Ok(entries) = fs::read_dir(self.cache()) else {
@@ -173,6 +195,39 @@ impl MeetingDir {
             });
         }
         unreachable!("candidates() is infinite")
+    }
+}
+
+/// Wall-clock and monotonic time read together when recording starts, so
+/// Unix timestamps from Meet events and monotonic screen timestamps can both
+/// be mapped onto the recording origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureClock {
+    /// Unix milliseconds.
+    pub wall_ms: i64,
+    /// `CLOCK_MONOTONIC` microseconds.
+    pub monotonic_us: i64,
+}
+
+impl CaptureClock {
+    /// Writes the clock as JSON to `path`, creating its parent directory.
+    pub fn write(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+        fs::write(path, serde_json::to_vec(self)?)
+            .with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// Reads the clock from `path`; a missing file is `None`.
+    pub fn read(path: &Path) -> Result<Option<Self>> {
+        match fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .with_context(|| format!("parsing {}", path.display())),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        }
     }
 }
 
@@ -397,5 +452,28 @@ mod tests {
         let same = renamed.rename("Sync").unwrap();
         assert_eq!(same.id.0, "2026-10-27 14:30 Sync (2)");
         assert!(same.path().is_dir());
+    }
+
+    #[test]
+    fn meet_and_screen_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = MeetingDir::create(root.path(), at(14, 30), "Sync").unwrap();
+        assert_eq!(dir.meet_events(), dir.path().join("meet-events.jsonl"));
+        assert_eq!(dir.screen(), dir.path().join("screen.mp4"));
+        assert_eq!(dir.screen_cache(), dir.path().join(".cache/screen.mkv"));
+        assert_eq!(dir.clock(), dir.path().join(".cache/clock.json"));
+    }
+
+    #[test]
+    fn clock_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = MeetingDir::create(root.path(), at(14, 30), "Sync").unwrap();
+        assert_eq!(CaptureClock::read(&dir.clock()).unwrap(), None);
+        let clock = CaptureClock {
+            wall_ms: 1_793_170_000_123,
+            monotonic_us: 98_765_432_101,
+        };
+        clock.write(&dir.clock()).unwrap();
+        assert_eq!(CaptureClock::read(&dir.clock()).unwrap(), Some(clock));
     }
 }

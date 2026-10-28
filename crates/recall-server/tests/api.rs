@@ -97,6 +97,9 @@ fn sample(id: &MeetingId, title: &str, alice: &SpeakerId, text: &str) -> Meeting
         clusters: Vec::new(),
         summary: None,
         models: BTreeMap::new(),
+        participants_hint: Vec::new(),
+        screen_offset_ms: None,
+        screen_error: None,
     }
 }
 

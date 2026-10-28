@@ -117,6 +117,9 @@ mod store {
                 chapters: vec![],
             }),
             models: BTreeMap::new(),
+            participants_hint: Vec::new(),
+            screen_offset_ms: None,
+            screen_error: None,
         };
         meeting.save(&dir.path()).unwrap();
         std::fs::write(dir.audio(), b"opus").unwrap();

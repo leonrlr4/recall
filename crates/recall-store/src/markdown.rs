@@ -262,6 +262,9 @@ mod tests {
                 }],
             }),
             models: BTreeMap::new(),
+            participants_hint: Vec::new(),
+            screen_offset_ms: None,
+            screen_error: None,
         };
         (meeting, speakers)
     }

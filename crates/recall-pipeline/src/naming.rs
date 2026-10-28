@@ -79,6 +79,7 @@ pub fn assign_clusters(
             label: format!("Remote {}", i + 1),
             embedding: centroids.get(cluster).cloned().unwrap_or_default(),
             speaker: None,
+            named_by: None,
         })
         .collect()
 }
@@ -194,6 +195,7 @@ mod tests {
             label: label.into(),
             embedding,
             speaker: None,
+            named_by: None,
         }
     }
 

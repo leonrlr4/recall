@@ -84,6 +84,18 @@ pub struct Cluster {
     pub label: String,
     pub embedding: Vec<f32>,
     pub speaker: Option<SpeakerId>,
+    /// How `speaker` was chosen; absent in records written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named_by: Option<NamedBy>,
+}
+
+/// The source of a cluster's speaker name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NamedBy {
+    Voiceprint,
+    Meet,
+    User,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -121,6 +133,16 @@ pub struct Meeting {
     pub summary: Option<Summary>,
     /// Model name per role (e.g. `"asr"`), recorded for reproducibility.
     pub models: BTreeMap<String, String>,
+    /// Names from the Meet roster, offered as choices when renaming a speaker.
+    #[serde(default)]
+    pub participants_hint: Vec<String>,
+    /// Milliseconds from the audio origin to the first screen frame, when a
+    /// screen recording exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_offset_ms: Option<i64>,
+    /// Why the screen recording failed, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_error: Option<String>,
 }
 
 impl Meeting {
@@ -196,6 +218,7 @@ mod tests {
                 label: "Remote 1".into(),
                 embedding: vec![0.25, -0.5],
                 speaker: Some(SpeakerId("3f1c".into())),
+                named_by: Some(NamedBy::Voiceprint),
             }],
             summary: Some(Summary {
                 one_line: "Weekly sync.".into(),
@@ -212,6 +235,9 @@ mod tests {
                 }],
             }),
             models,
+            participants_hint: vec!["Tom Lin".into(), "Amy Chen".into()],
+            screen_offset_ms: Some(1_250),
+            screen_error: None,
         }
     }
 
@@ -223,6 +249,44 @@ mod tests {
         assert!(!dir.path().join("meeting.json.tmp").exists());
         let loaded = Meeting::load(dir.path()).unwrap();
         assert_eq!(loaded, meeting);
+    }
+
+    #[test]
+    fn old_meeting_json_loads_with_new_fields_defaulted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut value = serde_json::to_value(sample()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        for key in ["participants_hint", "screen_offset_ms", "screen_error"] {
+            object.remove(key);
+        }
+        value["clusters"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("named_by");
+        fs::write(dir.path().join(FILE), serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let loaded = Meeting::load(dir.path()).unwrap();
+        assert!(loaded.participants_hint.is_empty());
+        assert_eq!(loaded.screen_offset_ms, None);
+        assert_eq!(loaded.screen_error, None);
+        assert_eq!(loaded.clusters[0].named_by, None);
+
+        loaded.save(dir.path()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE)).unwrap()).unwrap();
+        assert!(saved.get("screen_offset_ms").is_none());
+        assert!(saved.get("screen_error").is_none());
+        assert!(saved["clusters"][0].get("named_by").is_none());
+    }
+
+    #[test]
+    fn named_by_is_snake_case() {
+        assert_eq!(
+            serde_json::to_value(NamedBy::Voiceprint).unwrap(),
+            "voiceprint"
+        );
+        assert_eq!(serde_json::to_value(NamedBy::Meet).unwrap(), "meet");
+        assert_eq!(serde_json::to_value(NamedBy::User).unwrap(), "user");
     }
 
     #[test]

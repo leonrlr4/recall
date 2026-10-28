@@ -117,6 +117,9 @@ fn recovery_after_save_only_clears_and_queues() {
         clusters: vec![],
         summary: None,
         models: Default::default(),
+        participants_hint: Vec::new(),
+        screen_offset_ms: None,
+        screen_error: None,
     };
     meeting.save(&dir.path()).unwrap();
 
@@ -149,6 +152,9 @@ fn recovery_does_not_queue_a_second_job() {
         clusters: vec![],
         summary: None,
         models: Default::default(),
+        participants_hint: Vec::new(),
+        screen_offset_ms: None,
+        screen_error: None,
     };
     meeting.save(&dir.path()).unwrap();
     let job = index.enqueue(&dir.id, Step::Segment).unwrap();

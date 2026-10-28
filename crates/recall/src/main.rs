@@ -377,6 +377,9 @@ fn transcribe_file(config: &Config, mic: &Path, computer: &Path, json: bool) -> 
         clusters: Vec::new(),
         summary: None,
         models: Default::default(),
+        participants_hint: Vec::new(),
+        screen_offset_ms: None,
+        screen_error: None,
     }
     .save(&dir.path())?;
 
