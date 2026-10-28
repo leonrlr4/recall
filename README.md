@@ -245,9 +245,11 @@ On `meet.google.com` it reads:
 It sends those speaking, name and roster events, with the meeting code, to
 `http://127.0.0.1:7474/api/meet/events` and nowhere else. No audio or video
 leaves the page. The daemon stores the events in the meeting's
-`meet-events.jsonl` only while it is recording, and drops them otherwise.
-The extension's address is fixed, so it stops reaching the daemon if you
-change `port`.
+`meet-events.jsonl` while a capture is running, which includes the
+`debounce_secs` before a detected recording is confirmed (a capture that
+ends there is deleted with its events), and drops them otherwise. The
+extension's address is fixed, so it stops reaching the daemon if you change
+`port`, and nothing warns you; keep `port = 7474` to use the extension.
 
 After the call, a diarization cluster takes a Meet name when that name was
 the only one speaking for at least 60% of the cluster's overlapping speech
@@ -261,8 +263,8 @@ page), each recording also runs `gpu-screen-recorder` on the screen through
 xdg-desktop-portal, and the meeting page plays the video in step with the
 transcript. `ffmpeg` remuxes it into `screen.mp4` when the recording is kept;
 if the remux fails the video stays as `screen.mkv`. The screen starts with
-the recording proper, after the 8 s debounce, so the cached first seconds
-have audio only.
+the recording proper, after `debounce_secs` (8 s by default), so the cached
+first seconds have audio only.
 
 The first recording shows the portal's picker to choose a screen. The portal
 then hands back a restore token, saved in
@@ -375,10 +377,13 @@ cases. The `zh-en` case uses utterances from the CSZS dataset (MIT);
   someone records them; [bench/README.md](bench/README.md) says how.
 - The Meet extension reads Meet's page structure, which Google changes
   without notice; the selectors live in `extension/src/names.ts` and were
-  written without a live call to check them against. When naming breaks,
-  the status chip warns: "No speaker signal from Meet for 5 minutes"
-  (`signal_lost`) or "Meet speaker detection fell back to the video tiles"
-  (`hook_failed`). Meetings still get voice-matched names.
+  written without a live call to check them against. The status chip
+  catches two failures: "No speaker signal from Meet for 5 minutes"
+  (`signal_lost`) means Meet audio plays but no speaker was detected for
+  5 minutes, and "Meet speaker detection fell back to the video tiles"
+  (`hook_failed`) means the WebRTC hook failed and speaking comes from the
+  tiles' glow. It does not catch name selectors that stop matching: then
+  speakers stay voice-matched and no "via Meet" names appear.
 - Slack, Discord, Zoom and Teams have no extension; their speakers are named
   by voice only.
 - Live captions are not built.
