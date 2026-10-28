@@ -45,24 +45,33 @@ export interface RtpSource {
 
 /**
  * Reads audio levels from RTP sources. A source keeps reporting the level of
- * its last packet after packets stop, so a source whose `timestamp` has not
- * advanced since the previous read counts as silent. The comparison is with
- * the source's own previous value, so the timestamp's clock does not matter.
+ * its last packet for up to 10 s after packets stop, and when Meet moves a
+ * participant to another receiver both receivers list the same source until
+ * the old entry expires. So only the entry with the newest `timestamp` for a
+ * source counts, and only if that timestamp advanced past the newest one of
+ * the previous read; otherwise the source reads as silent. Comparing with
+ * the source's own earlier timestamps keeps the timestamp's clock irrelevant.
+ * An entry without a timestamp always counts.
  */
 export class SourceLevels {
-  private seen = new Map<number, number>();
+  private newest = new Map<number, number>();
 
   read(sources: Iterable<RtpSource>): Map<number, number> {
-    const levels = new Map<number, number>();
-    const seen = new Map<number, number>();
-    for (const s of sources) {
-      const ts = s.timestamp;
-      const stale = ts !== undefined && this.seen.get(s.source) === ts;
-      if (ts !== undefined) seen.set(s.source, ts);
-      const level = stale ? 0 : (s.audioLevel ?? 0);
-      levels.set(s.source, Math.max(level, levels.get(s.source) ?? 0));
+    const entries = [...sources];
+    const newest = new Map<number, number>();
+    for (const { source, timestamp } of entries) {
+      if (timestamp !== undefined) newest.set(source, Math.max(timestamp, newest.get(source) ?? -Infinity));
     }
-    this.seen = seen;
+    const levels = new Map<number, number>();
+    for (const { source, timestamp, audioLevel } of entries) {
+      const previous = this.newest.get(source);
+      const fresh =
+        timestamp === undefined ||
+        (timestamp === newest.get(source) && (previous === undefined || timestamp > previous));
+      const level = fresh ? (audioLevel ?? 0) : 0;
+      levels.set(source, Math.max(level, levels.get(source) ?? 0));
+    }
+    this.newest = newest;
     return levels;
   }
 }

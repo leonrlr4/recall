@@ -33,14 +33,15 @@ export function meetingCode(pathname: string): string | null {
 
 /**
  * Rebuilds `value` as a `MeetEvent` from the fields the daemon knows, or
- * returns null. This strips the hook's page-internal `source` marker and
+ * returns null, with `t` rounded to whole ms. This strips the hook's page-internal `source` marker and
  * anything else a page script could have added to a posted message.
  */
 export function sanitize(value: unknown): MeetEvent | null {
   if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;
-  const t = v.t;
-  if (typeof t !== 'number' || !Number.isFinite(t)) return null;
+  if (typeof v.t !== 'number' || !Number.isFinite(v.t)) return null;
+  // The daemon reads `t` as an integer and rejects the whole batch on a fraction.
+  const t = Math.round(v.t);
   switch (v.kind) {
     case 'speaking_start':
     case 'speaking_stop':

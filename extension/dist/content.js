@@ -155,8 +155,8 @@
   function sanitize(value) {
     if (typeof value !== "object" || value === null) return null;
     const v = value;
-    const t = v.t;
-    if (typeof t !== "number" || !Number.isFinite(t)) return null;
+    if (typeof v.t !== "number" || !Number.isFinite(v.t)) return null;
+    const t = Math.round(v.t);
     switch (v.kind) {
       case "speaking_start":
       case "speaking_stop":
@@ -177,7 +177,8 @@
   const REFRESH_MS = 3e4;
   const SIGNAL_LOST_MS = 3e5;
   const AUDIO_FRESH_MS = 2e3;
-  function startContent({ win, doc, pathname, send, now }) {
+  function startContent({ win, doc, pathname, send, now: clock }) {
+    const now = () => Math.round(clock());
     const queue = new EventQueue();
     const namer = new Namer();
     const glow = new GlowFallback();
@@ -282,7 +283,7 @@
       doc: document,
       pathname: () => location.pathname,
       send: sendToWorker,
-      now: () => performance.timeOrigin + performance.now()
+      now: () => Math.round(performance.timeOrigin + performance.now())
     });
   }
 })();

@@ -17,8 +17,9 @@ export const POLL_MS = 100;
 /** Minimum gap between two page-internal `audio` heartbeats. */
 const AUDIO_HEARTBEAT_MS = 1000;
 
+/** Unix ms, whole: the daemon reads `t` as an integer. */
 function wallClock(): number {
-  return performance.timeOrigin + performance.now();
+  return Math.round(performance.timeOrigin + performance.now());
 }
 
 /**

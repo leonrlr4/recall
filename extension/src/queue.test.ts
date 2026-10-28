@@ -30,6 +30,7 @@ describe('sanitize', () => {
     expect(
       sanitize({ source: 'recall', t: 5, kind: 'speaking_start', participant: 'csrc:1', extra: 1 }),
     ).toEqual({ t: 5, kind: 'speaking_start', participant: 'csrc:1' });
+    expect(sanitize({ t: 5.5, kind: 'status', status: 'ok' })).toEqual({ t: 6, kind: 'status', status: 'ok' });
     expect(sanitize({ t: 5, kind: 'roster', names: ['A', 3] })).toBeNull();
     expect(sanitize({ t: 5, kind: 'audio' })).toBeNull();
     expect(sanitize({ kind: 'status', status: 'ok' })).toBeNull();

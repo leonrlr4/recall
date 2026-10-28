@@ -3,8 +3,8 @@
   function sanitize(value) {
     if (typeof value !== "object" || value === null) return null;
     const v = value;
-    const t = v.t;
-    if (typeof t !== "number" || !Number.isFinite(t)) return null;
+    if (typeof v.t !== "number" || !Number.isFinite(v.t)) return null;
+    const t = Math.round(v.t);
     switch (v.kind) {
       case "speaking_start":
       case "speaking_stop":

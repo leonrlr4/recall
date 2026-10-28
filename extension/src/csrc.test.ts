@@ -23,4 +23,20 @@ describe('SourceLevels', () => {
     expect(levels.read([{ source: 7, audioLevel: 0.5, timestamp: 10 }])).toEqual(new Map([[7, 0]]));
     expect(levels.read([{ source: 7, audioLevel: 0.4, timestamp: 30 }])).toEqual(new Map([[7, 0.4]]));
   });
+
+  it('reads a frozen entry on a second receiver as silent', () => {
+    // Meet moved the participant to another receiver; the old one keeps its
+    // last entry, loud and frozen, for up to 10 s.
+    const levels = new SourceLevels();
+    const frozen = { source: 7, audioLevel: 0.5, timestamp: 100 };
+    expect(levels.read([frozen])).toEqual(new Map([[7, 0.5]]));
+    expect(levels.read([frozen, { source: 7, audioLevel: 0.01, timestamp: 120 }])).toEqual(new Map([[7, 0.01]]));
+    expect(levels.read([{ source: 7, audioLevel: 0.01, timestamp: 140 }, frozen])).toEqual(new Map([[7, 0.01]]));
+    // The frozen entry alone, after the new receiver went quiet, is still stale.
+    expect(levels.read([frozen])).toEqual(new Map([[7, 0]]));
+
+    // On first sight, only the newer of two entries counts.
+    const first = new SourceLevels();
+    expect(first.read([frozen, { source: 7, audioLevel: 0.01, timestamp: 120 }])).toEqual(new Map([[7, 0.01]]));
+  });
 });

@@ -133,6 +133,27 @@ describe('startContent', () => {
     ]);
   });
 
+  it('sends integer t from a fractional clock', () => {
+    loadFixture('speaking');
+    stop = startContent({
+      win: window,
+      doc: document,
+      pathname: () => '/abc-defg-hij',
+      send: (message) => sent.push(message),
+      now: () => 1_000_000.5,
+    });
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { source: 'recall', t: 1_000_000.4, kind: 'speaking_start', participant: 'csrc:1' },
+        source: window,
+      }),
+    );
+    vi.advanceTimersByTime(2000);
+    const ts = delivered().map((e) => e.t);
+    expect(ts.length).toBeGreaterThan(1);
+    expect(ts.every(Number.isInteger)).toBe(true);
+  });
+
   it('flushes on page hide', () => {
     loadFixture('grid');
     start();

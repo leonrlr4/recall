@@ -40,7 +40,9 @@ export interface ContentDeps {
 }
 
 /** Starts the content script; the returned function stops its timers and listeners. */
-export function startContent({ win, doc, pathname, send, now }: ContentDeps): () => void {
+export function startContent({ win, doc, pathname, send, now: clock }: ContentDeps): () => void {
+  // The daemon reads `t` as an integer and rejects the whole batch on a fraction.
+  const now = () => Math.round(clock());
   const queue = new EventQueue();
   const namer = new Namer();
   const glow = new GlowFallback();
@@ -163,6 +165,6 @@ if (import.meta.env.MODE === 'content') {
     doc: document,
     pathname: () => location.pathname,
     send: sendToWorker,
-    now: () => performance.timeOrigin + performance.now(),
+    now: () => Math.round(performance.timeOrigin + performance.now()),
   });
 }

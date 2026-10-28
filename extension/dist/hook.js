@@ -24,25 +24,28 @@
     }
   }
   class SourceLevels {
-    seen = /* @__PURE__ */ new Map();
+    newest = /* @__PURE__ */ new Map();
     read(sources) {
-      const levels = /* @__PURE__ */ new Map();
-      const seen = /* @__PURE__ */ new Map();
-      for (const s of sources) {
-        const ts = s.timestamp;
-        const stale = ts !== void 0 && this.seen.get(s.source) === ts;
-        if (ts !== void 0) seen.set(s.source, ts);
-        const level = stale ? 0 : s.audioLevel ?? 0;
-        levels.set(s.source, Math.max(level, levels.get(s.source) ?? 0));
+      const entries = [...sources];
+      const newest = /* @__PURE__ */ new Map();
+      for (const { source, timestamp } of entries) {
+        if (timestamp !== void 0) newest.set(source, Math.max(timestamp, newest.get(source) ?? -Infinity));
       }
-      this.seen = seen;
+      const levels = /* @__PURE__ */ new Map();
+      for (const { source, timestamp, audioLevel } of entries) {
+        const previous = this.newest.get(source);
+        const fresh = timestamp === void 0 || timestamp === newest.get(source) && (previous === void 0 || timestamp > previous);
+        const level = fresh ? audioLevel ?? 0 : 0;
+        levels.set(source, Math.max(level, levels.get(source) ?? 0));
+      }
+      this.newest = newest;
       return levels;
     }
   }
   const POLL_MS = 100;
   const AUDIO_HEARTBEAT_MS = 1e3;
   function wallClock() {
-    return performance.timeOrigin + performance.now();
+    return Math.round(performance.timeOrigin + performance.now());
   }
   function installHook(win, now = wallClock) {
     if (win.__recallHooked) return () => {
