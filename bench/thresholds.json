@@ -1,5 +1,10 @@
 {
   "silence": {
     "lines": {"max": 0}
+  },
+  "zh-en": {
+    "found": {"min": 0.92},
+    "side": {"min": 0.95},
+    "leaked": {"max": 0}
   }
 }

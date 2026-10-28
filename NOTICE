@@ -12,3 +12,14 @@ crates/recall-pipeline/tests/fixtures/speech.opus
     Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur,
     "Librispeech: an ASR corpus based on public domain audio books",
     ICASSP 2015. Source: https://www.openslr.org/12/
+
+bench/fixtures/zh-en/computer.ogg
+    Test-split files 2650, 953, 363, 20 and 92 (the "correct" Mandarin-English
+    code-switched recordings) of CSZS, the zero resource code-switched speech
+    benchmark, joined with one second of silence between them and re-encoded
+    as Opus; truth.json holds their transcriptions converted to Traditional
+    Chinese with OpenCC s2tw. CSZS is licensed under the MIT License and is
+    described in: Kuan-Po Huang, Chih-Kai Yang, Yu-Kuan Fu, Ewan Dunbar and
+    Hung-Yi Lee, "Zero Resource Code-Switched Speech Benchmark Using Speech
+    Utterance Pairs for Multiple Spoken Languages", ICASSP 2024.
+    Source: https://huggingface.co/datasets/ky552/cszs_zh_en
