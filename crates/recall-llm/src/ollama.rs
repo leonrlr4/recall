@@ -9,8 +9,11 @@ use tokio::sync::mpsc;
 use crate::Llm;
 use crate::http::{Timeouts, check, lines, send_within};
 
-/// How long Ollama keeps the model loaded after a request.
-const KEEP_ALIVE: &str = "30m";
+/// How long Ollama keeps the model loaded after a request: long enough to
+/// span the calls of one meeting's summary, short enough that a 22 GB model
+/// on a laptop's shared memory is freed soon after. 30m held it through
+/// the next half hour of the user's work.
+const KEEP_ALIVE: &str = "2m";
 
 pub struct Ollama {
     endpoint: String,

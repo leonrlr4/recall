@@ -57,7 +57,7 @@ async fn ollama_complete_posts_chat_and_returns_content() {
     assert_eq!(body["model"], "qwen3.6:35b-a3b");
     assert_eq!(body["stream"], false);
     assert_eq!(body["think"], false);
-    assert_eq!(body["keep_alive"], "30m");
+    assert_eq!(body["keep_alive"], "2m");
     assert_eq!(body["format"], "json");
     assert_eq!(body["options"]["num_ctx"], 32_768);
     assert_eq!(

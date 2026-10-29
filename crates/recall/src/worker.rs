@@ -81,6 +81,7 @@ impl Worker {
     }
 
     fn run(mut self, wake: &Receiver<()>) {
+        lower_priority();
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -95,7 +96,9 @@ impl Worker {
         loop {
             match self.run_next(&runtime, &mut engines) {
                 Ok(true) => continue,
-                Ok(false) => {}
+                // The engines hold about 2 GB; load them again for the next
+                // meeting rather than keep them between meetings.
+                Ok(false) => engines = None,
                 Err(err) => tracing::error!(err = format!("{err:#}"), "the job queue failed"),
             }
             match wake.recv_timeout(IDLE_POLL) {
@@ -415,6 +418,21 @@ pub fn percent_encode(s: &str) -> String {
         }
     }
     out
+}
+
+/// Puts the calling thread, and the transcription threads it starts, under
+/// `SCHED_IDLE`: processing a meeting then uses only CPU time nothing else
+/// wants, so the desktop stays responsive while all cores transcribe.
+/// Recording runs on other threads and keeps its priority.
+fn lower_priority() {
+    let param = libc::sched_param { sched_priority: 0 };
+    // SAFETY: `param` is a valid sched_param, and pid 0 is the calling thread.
+    if unsafe { libc::sched_setscheduler(0, libc::SCHED_IDLE, &param) } != 0 {
+        tracing::warn!(
+            err = %std::io::Error::last_os_error(),
+            "lowering the worker's priority"
+        );
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
