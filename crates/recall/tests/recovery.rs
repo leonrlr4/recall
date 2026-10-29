@@ -118,6 +118,7 @@ fn recovery_after_save_only_clears_and_queues() {
         participants_hint: Vec::new(),
         screen_offset_ms: None,
         screen_error: None,
+        sync: false,
     };
     meeting.save(&dir.path()).unwrap();
 
@@ -153,6 +154,7 @@ fn recovery_does_not_queue_a_second_job() {
         participants_hint: Vec::new(),
         screen_offset_ms: None,
         screen_error: None,
+        sync: false,
     };
     meeting.save(&dir.path()).unwrap();
     let job = index.enqueue(&dir.id, Step::Segment).unwrap();

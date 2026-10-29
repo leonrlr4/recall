@@ -120,6 +120,7 @@ mod store {
             participants_hint: Vec::new(),
             screen_offset_ms: None,
             screen_error: None,
+            sync: false,
         };
         meeting.save(&dir.path()).unwrap();
         std::fs::write(dir.audio(), b"opus").unwrap();

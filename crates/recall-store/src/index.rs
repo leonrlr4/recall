@@ -650,6 +650,7 @@ mod tests {
             participants_hint: Vec::new(),
             screen_offset_ms: None,
             screen_error: None,
+            sync: false,
         }
     }
 

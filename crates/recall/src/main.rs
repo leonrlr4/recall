@@ -405,6 +405,7 @@ fn transcribe_file(config: &Config, mic: &Path, computer: &Path, json: bool) -> 
         participants_hint: Vec::new(),
         screen_offset_ms: None,
         screen_error: None,
+        sync: false,
     }
     .save(&dir.path())?;
 

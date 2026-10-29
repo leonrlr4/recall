@@ -143,6 +143,11 @@ pub struct Meeting {
     /// Why the screen recording failed, when it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_error: Option<String>,
+    /// The user asked for this meeting to be published to the shared vault.
+    /// Off unless turned on, because recall records every call, private
+    /// ones included.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sync: bool,
 }
 
 impl Meeting {
@@ -238,6 +243,7 @@ mod tests {
             participants_hint: vec!["Tom Lin".into(), "Amy Chen".into()],
             screen_offset_ms: Some(1_250),
             screen_error: None,
+            sync: false,
         }
     }
 

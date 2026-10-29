@@ -101,6 +101,7 @@ fn sample(id: &MeetingId, title: &str, alice: &SpeakerId, text: &str) -> Meeting
         participants_hint: Vec::new(),
         screen_offset_ms: None,
         screen_error: None,
+        sync: false,
     }
 }
 

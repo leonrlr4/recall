@@ -728,6 +728,7 @@ fn keep(
         participants_hint: Vec::new(),
         screen_offset_ms,
         screen_error,
+        sync: false,
     };
     meeting.save(&dir.path())?;
     queue(&meeting)?;
