@@ -209,6 +209,7 @@ remote = ""                            # git URL of a shared vault; empty: off
 dir = ""                               # recall's clone; empty: <data_dir>/vault, ~ expands
 folder = "meetings"                    # the only folder recall writes in the vault
 branch = "main"
+
 [glossary]
 terms = ["Arlene", "BBINT-220", "TRL6"] # always included, first
 sources = ["~/notes/people"]           # Markdown files or directories; ~ is expanded
