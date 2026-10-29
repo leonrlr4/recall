@@ -136,6 +136,27 @@ impl Tracker {
     }
 }
 
+/// Whether a core `error` event means the PipeWire connection is unusable,
+/// rather than that one object the detector touched is gone.
+///
+/// A client that exits between its global's announcement and our bind
+/// produces two errors, both ENOENT: "no global N" on the new proxy's id
+/// (the server's registry bind failed), then, once `global_remove` drops
+/// that proxy, "unknown resource P op:7" on the core id (core `destroy` of
+/// a resource the server never created). An error on any id other than
+/// the core's concerns that proxy alone. On the core id, ENOENT and ESTALE
+/// come from the server's object lookups ("unknown resource", "no global",
+/// "no global any more") and also mean one missing object. A lost socket
+/// arrives on the core id as EPIPE, the only error pw-mon and WirePlumber
+/// treat as fatal; other core errors are rare enough that restarting is
+/// the safer reading.
+fn breaks_connection(id: u32, res: i32) -> bool {
+    use rustix::io::Errno;
+    id == pw::core::PW_ID_CORE
+        && res != -Errno::NOENT.raw_os_error()
+        && res != -Errno::STALE.raw_os_error()
+}
+
 fn run(
     tx: mpsc::Sender<DetectEvent>,
     ignore: String,
@@ -174,8 +195,10 @@ fn run(
     let _core_listener = core
         .add_listener_local()
         .error(move |id, _seq, res, message| {
-            tracing::error!(id, res, message, "PipeWire error in the detector");
-            if id == pw::core::PW_ID_CORE {
+            if !breaks_connection(id, res) {
+                tracing::debug!(id, res, message, "PipeWire object gone in the detector");
+            } else {
+                tracing::error!(id, res, message, "PipeWire error in the detector");
                 error_slot.borrow_mut().get_or_insert_with(|| {
                     format!("PipeWire connection failed ({res}): {message}")
                 });
@@ -285,4 +308,25 @@ fn run(
     }
     // Returning drops the tracker and with it the event sender, so the
     // receiver sees the channel disconnect.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_core_errors_other_than_missing_objects_break_the_connection() {
+        let core = pw::core::PW_ID_CORE;
+        // "no global 104" on the proxy whose bind failed.
+        assert!(!breaks_connection(13, -2));
+        // Errors on other proxies never end the connection.
+        assert!(!breaks_connection(13, -32));
+        // "unknown resource 13 op:7" when that proxy is destroyed.
+        assert!(!breaks_connection(core, -2));
+        // "no global 104 any more".
+        assert!(!breaks_connection(core, -116));
+        // The socket hung up, or the protocol broke.
+        assert!(breaks_connection(core, -32));
+        assert!(breaks_connection(core, -71));
+    }
 }

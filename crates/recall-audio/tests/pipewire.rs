@@ -6,9 +6,11 @@
 //! RECALL_PW_TESTS=1 cargo test -p recall-audio --test pipewire -- --test-threads=1
 //! ```
 
+use std::cell::Cell;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -336,4 +338,57 @@ fn detector_ignores_recalls_own_streams() {
     capture.stop().unwrap();
     detector.stop();
     assert_eq!(own, None);
+}
+
+/// Clients that connect and exit at once leave the detector bound to
+/// globals that no longer exist; PipeWire answers with errors about those
+/// objects, which must not end the detector.
+#[test]
+fn detector_survives_clients_that_vanish() {
+    if !enabled() {
+        return;
+    }
+    let (tx, rx) = mpsc::channel();
+    let detector = Detector::spawn(tx, "recall").unwrap();
+    // Connections closed right after their first roundtrip, so some client
+    // globals are gone by the time the detector's bind reaches the server.
+    pipewire::init();
+    let main_loop = pipewire::main_loop::MainLoopRc::new(None).unwrap();
+    let context = pipewire::context::ContextRc::new(&main_loop, None).unwrap();
+    for _ in 0..500 {
+        let core = context.connect_rc(None).unwrap();
+        let done = Rc::new(Cell::new(false));
+        let flag = done.clone();
+        let _listener = core
+            .add_listener_local()
+            .done(move |_, _| flag.set(true))
+            .register();
+        core.sync(0).unwrap();
+        while !done.get() {
+            main_loop
+                .loop_()
+                .iterate(pipewire::loop_::Timeout::Finite(Duration::from_secs(1)));
+        }
+    }
+    let died = wait_for(&rx, Duration::from_millis(500), |ev| {
+        matches!(ev, DetectEvent::DetectorDied(_))
+    });
+    assert_eq!(died, None);
+
+    let mut record = Command::new("pw-record")
+        .args(["--target", "0", "/dev/null"])
+        .spawn()
+        .unwrap();
+    let opened = wait_for(
+        &rx,
+        Duration::from_secs(2),
+        |ev| matches!(ev, DetectEvent::MicOpened(user) if user.app_name == "pw-record"),
+    );
+    record.kill().unwrap();
+    record.wait().unwrap();
+    assert!(
+        opened.is_some(),
+        "no MicOpened for pw-record after the churn"
+    );
+    detector.stop();
 }
