@@ -196,6 +196,12 @@ context_tokens = 32768                 # model context; see below
 [stt]
 engine = "breeze"                      # the only engine; anything else is rejected
 threads = 8
+
+[vault]
+remote = ""                            # git URL of a shared vault; empty: off
+dir = ""                               # recall's clone; empty: <data_dir>/vault, ~ expands
+folder = "meetings"                    # the only folder recall writes in the vault
+branch = "main"
 ```
 
 ## LLM backends
@@ -286,6 +292,36 @@ To stop recording the screen in the middle of a meeting, run
 the video and deletes it; the audio goes on. If the screen recorder fails to
 start or exits early, a notification says so and the audio goes on.
 
+## Publishing to a team vault
+
+With `vault.remote` set to a git repository holding an Obsidian vault, each
+meeting page gets a "Publish to vault" switch. It is off for every meeting
+until you turn it on, since recall records private calls too. A published
+meeting is its `meeting.md` (summary, decisions, action items, chapters,
+transcript; never audio or video) at `<folder>/<note name>.md`, where the
+note name is the meeting folder's name made valid on every OS:
+`2026-10-29 12:37 Meeting 12:37` becomes
+`meetings/2026-10-29 12.37 Meeting 12.37.md`.
+
+recall keeps its own clone in `vault.dir` (it refuses a clone it did not
+make, since it resets the clone before every change) and commits straight to
+`vault.branch` with your git identity: "Add meeting: …" when the switch goes
+on (or when processing finishes, if it was turned on earlier), "Update
+meeting: …" about 20 s after edits to the title, transcript or speaker names
+and after a rerun, and "Remove meeting: …" when the switch goes off or the
+meeting is deleted. A removed note stays in the vault's git history. Renaming
+a meeting moves its note. Edits made to the note in the vault are overwritten
+by the next update. recall only writes inside `vault.folder`, rebases onto
+teammates' pushes, and never force-pushes; a failed push shows on the meeting
+page and is retried with backoff. What was last pushed for each meeting is in
+`<data_dir>/vault.json`.
+
+For an `https://` remote, the clone uses the GitHub CLI as its only
+credential helper (`gh auth git-credential`), so run `gh auth login` as an
+account with push access first. Under the systemd service, `gh` must be on
+the unit's `PATH` and find its token without a terminal: in
+`~/.config/gh/hosts.yml`, or in a keyring unlocked by your login.
+
 ## MCP server
 
 `recall mcp` is an MCP server on stdin/stdout that lets an assistant read and
@@ -326,6 +362,9 @@ There is no tool to discard or delete a meeting.
   `endpoint` at another host. With the `claude` backend, the transcript text
   with speaker names is sent to the Anthropic API for each summary and each
   question asked about a meeting.
+- With `vault.remote` set, the notes of meetings you switch to "Publish to
+  vault" are pushed to that repository, where everyone with access can read
+  them and their history. Nothing else is pushed.
 - recall records other people's voices and keeps voice embeddings to recognise
   them. Getting their consent, and following the recording laws where you and
   they are, is up to you.

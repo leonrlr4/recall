@@ -222,6 +222,7 @@ async fn harness() -> Harness {
             Ok(7)
         }),
         meet: Arc::new(|batch| Ok(batch.events.len())),
+        vault: None,
     };
     let router = build_router(state.clone());
     tokio::spawn(async move { axum_serve(listener, router).await });

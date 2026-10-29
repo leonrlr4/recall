@@ -62,6 +62,21 @@ export interface Meeting {
   screen_offset_ms?: number;
   /** Why the screen recording failed, when it did. */
   screen_error?: string;
+  /** Publish to the shared vault; absent means off. */
+  sync?: boolean;
+}
+
+/** Where a meeting stands with the shared vault. */
+export interface VaultStatus {
+  /** The switch value asked for while a job was processing the meeting. */
+  requested: boolean | null;
+  /** A change is waiting to be pushed or is being pushed. */
+  queued: boolean;
+  /** The note's path in the vault as last pushed; null when it is not there. */
+  path: string | null;
+  synced_at: string | null;
+  /** Why the last attempt failed; the daemon retries on its own. */
+  error: string | null;
 }
 
 export interface MeetingDetail {
@@ -71,6 +86,8 @@ export interface MeetingDetail {
   markdown: string;
   /** The meeting has `screen.mp4`, served at `/api/meetings/{id}/screen`. */
   has_screen: boolean;
+  /** Null when publishing to a vault is off (no `vault.remote`). */
+  vault: VaultStatus | null;
 }
 
 export interface MeetingRow {
@@ -130,6 +147,7 @@ export interface SegmentPatch {
 export interface MeetingPatch {
   title?: string;
   segments?: SegmentPatch[];
+  sync?: boolean;
 }
 
 export interface LlmConfig {
@@ -147,6 +165,16 @@ export interface SttConfig {
   threads: number;
 }
 
+export interface VaultConfig {
+  /** The vault's remote URL; empty turns publishing off. */
+  remote: string;
+  /** recall's clone; empty means `<data_dir>/vault`. */
+  dir: string;
+  /** Folder in the vault for the meeting notes. */
+  folder: string;
+  branch: string;
+}
+
 /** `GET /api/config`: the config the daemon is running with. */
 export interface Config {
   meetings_dir: string;
@@ -161,12 +189,14 @@ export interface Config {
   ui_lang?: string | null;
   stt: SttConfig;
   port: number;
+  vault: VaultConfig;
 }
 
 /** `PUT /api/config` body: any subset, sections may be partial. */
-export type ConfigPatch = Partial<Omit<Config, 'llm' | 'stt'>> & {
+export type ConfigPatch = Partial<Omit<Config, 'llm' | 'stt' | 'vault'>> & {
   llm?: Partial<LlmConfig>;
   stt?: Partial<SttConfig>;
+  vault?: Partial<VaultConfig>;
 };
 
 export interface SelfTest {

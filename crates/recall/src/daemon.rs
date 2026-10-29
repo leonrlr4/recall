@@ -13,6 +13,10 @@
 //! joined: stopping the daemon does not wait for a transcription that can
 //! take minutes. The step it leaves running is marked failed by
 //! [`sweep_interrupted`] on the next start, and its job runs again.
+//!
+//! With `vault.remote` set, the vault sync is a third plain thread (see
+//! [`crate::vault`]), fed by the HTTP handlers and by a task that forwards
+//! the end of every job. It is not joined either.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -36,6 +40,7 @@ use crate::meet_sink::{LiveSlot, MeetSink, Seen};
 use crate::notify;
 use crate::recorder::Recorder;
 use crate::selftest;
+use crate::vault::VaultSync;
 use crate::worker::{Worker, load_real_engines, sweep_interrupted};
 
 const TICK: Duration = Duration::from_secs(1);
@@ -153,6 +158,7 @@ pub async fn run(config: Config) -> Result<()> {
             .context("spawning the recorder thread")?
     };
 
+    let vault = start_vault(&config, &speakers, &index, &events);
     let state = AppState {
         config: config.clone(),
         config_path: Config::path(),
@@ -189,6 +195,7 @@ pub async fn run(config: Config) -> Result<()> {
                 .accept(batch)
             })
         },
+        vault,
     };
     let mut http_server = tokio::spawn(recall_server::serve(state));
 
@@ -241,6 +248,34 @@ pub async fn run(config: Config) -> Result<()> {
     remove_file(&socket);
     remove_file(&notify::state_path());
     outcome
+}
+
+/// Starts the vault sync's thread and the task that feeds it finished jobs,
+/// when `vault.remote` is set. Like the worker it is never joined: a push
+/// cut short by the exit is redone from the ledger on the next start. A
+/// sync that cannot start is logged and leaves publishing off rather than
+/// stopping the daemon.
+fn start_vault(
+    config: &Arc<Config>,
+    speakers: &Arc<Mutex<Speakers>>,
+    index: &Arc<Mutex<Index>>,
+    events: &broadcast::Sender<Event>,
+) -> Option<Arc<dyn recall_server::Vault>> {
+    if !config.vault.enabled() {
+        return None;
+    }
+    let started = VaultSync::new(config.clone(), speakers.clone(), index.clone())
+        .and_then(|(vault, syncer)| syncer.spawn().map(|_| vault));
+    match started {
+        Ok(vault) => {
+            tokio::spawn(vault.clone().follow(events.subscribe()));
+            Some(vault)
+        }
+        Err(err) => {
+            tracing::error!(err = format!("{err:#}"), "starting the vault sync");
+            None
+        }
+    }
 }
 
 /// Takes an exclusive lock on `<runtime dir>/daemon.lock`, failing if another

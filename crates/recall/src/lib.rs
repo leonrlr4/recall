@@ -7,4 +7,5 @@ pub mod notify;
 pub mod recorder;
 pub mod screen;
 pub mod selftest;
+pub mod vault;
 pub mod worker;

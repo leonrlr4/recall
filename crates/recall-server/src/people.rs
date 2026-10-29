@@ -8,9 +8,9 @@ use axum::extract::{Path, State};
 use recall_store::{Meeting, MeetingDir, Person, Side, SpeakerId, Speakers};
 use serde::{Deserialize, Serialize};
 
-use crate::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::meetings::refresh;
+use crate::{AppState, SyncWhen};
 
 #[derive(Serialize)]
 pub struct PersonDto {
@@ -83,7 +83,8 @@ pub struct PatchPerson {
 /// Renames and/or merges, saves `speakers.json`, then rewrites `meeting.md`
 /// and the index row of every meeting the change shows up in. A merge also
 /// moves the dropped id's segments and clusters to the kept id in
-/// `meeting.json`. Returns the surviving person.
+/// `meeting.json`. The vault sync is told about each rewritten meeting, so
+/// a published note picks up the new name. Returns the surviving person.
 pub async fn patch(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -168,7 +169,12 @@ pub async fn patch(
             Ok(())
         };
         match result.and_then(|()| refresh(&state.config, &index, &speakers, meeting, dir)) {
-            Ok(()) => updated += 1,
+            Ok(()) => {
+                updated += 1;
+                if let Some(vault) = &state.vault {
+                    vault.touch(&dir.id, SyncWhen::Debounced);
+                }
+            }
             Err(e) => {
                 tracing::warn!("updating {} after a people edit: {e:#}", dir.id.0);
                 failed.push(dir.id.0.clone());

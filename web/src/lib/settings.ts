@@ -33,20 +33,25 @@ export function uiLangOf(v: string | null | undefined): UiLang {
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+/** Config keys holding a section that the server merges key by key. */
+const SECTIONS = ['llm', 'stt', 'vault'] as const;
+type Section = (typeof SECTIONS)[number];
+const isSection = (key: string): key is Section => (SECTIONS as readonly string[]).includes(key);
+
 /**
  * The fields of `next` that differ from `prev`, shaped as a `PUT /api/config`
- * body. Sections (`llm`, `stt`) carry only their changed keys. An unset
- * `ui_lang` (absent or null) on both sides is no change; clearing a set one
- * sends `null`.
+ * body. Sections (`llm`, `stt`, `vault`) carry only their changed keys. An
+ * unset `ui_lang` (absent or null) on both sides is no change; clearing a set
+ * one sends `null`.
  */
 export function configDiff(prev: Config, next: Config): ConfigPatch {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(next) as (keyof Config)[]) {
     const a = prev[key];
     const b = next[key];
-    if (key === 'llm' || key === 'stt') {
+    if (isSection(key)) {
       const section: Record<string, unknown> = {};
-      const pa = a as unknown as Record<string, unknown>;
+      const pa = (a ?? {}) as unknown as Record<string, unknown>;
       const pb = b as unknown as Record<string, unknown>;
       for (const k of Object.keys(pb)) if (!same(pa[k], pb[k])) section[k] = pb[k];
       if (Object.keys(section).length > 0) out[key] = section;
@@ -65,10 +70,11 @@ export function configDiff(prev: Config, next: Config): ConfigPatch {
  */
 export function applyPatch(config: Config, patch: ConfigPatch): Config {
   const out = structuredClone(config);
-  const { llm, stt, ...top } = patch;
+  const { llm, stt, vault, ...top } = patch;
   Object.assign(out, top);
   if (llm) Object.assign(out.llm, llm);
   if (stt) Object.assign(out.stt, stt);
+  if (vault) Object.assign(out.vault, vault);
   if (out.ui_lang === null) delete out.ui_lang;
   return out;
 }
@@ -78,7 +84,22 @@ export function mergePatch(a: ConfigPatch, b: ConfigPatch): ConfigPatch {
   const out: ConfigPatch = { ...a, ...b };
   if (a.llm || b.llm) out.llm = { ...a.llm, ...b.llm };
   if (a.stt || b.stt) out.stt = { ...a.stt, ...b.stt };
+  if (a.vault || b.vault) out.vault = { ...a.vault, ...b.vault };
   return out;
+}
+
+/**
+ * A vault folder the server accepts: relative, with no empty, `.` or `..`
+ * parts, so recall's writes stay inside it (`VaultConfig::validate`).
+ */
+export function vaultFolderOk(folder: string): boolean {
+  const trimmed = folder.replace(/^\/+|\/+$/g, '');
+  return (
+    trimmed !== '' &&
+    !folder.startsWith('/') &&
+    !trimmed.includes('\\') &&
+    trimmed.split('/').every((p) => p !== '' && p !== '.' && p !== '..')
+  );
 }
 
 /** Form fields, dotted for section keys, in the order the form shows them. */
@@ -97,6 +118,9 @@ export const FIELDS = [
   'llm.context_tokens',
   'summary_lang',
   'ui_lang',
+  'vault.remote',
+  'vault.folder',
+  'vault.branch',
   'port',
 ] as const;
 
