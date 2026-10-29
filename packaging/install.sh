@@ -118,10 +118,13 @@ if lib_src="$(find_lib_dir)"; then
     shopt -s nullglob
     libs=("$lib_src/libsherpa-onnx-c-api.so" "$lib_src"/libonnxruntime*.so*)
     shopt -u nullglob
-    # -L copies the files symlinks point to, so the copies stand alone.
-    run cp -L "${libs[@]}" "$LIB_DIR/"
+    # install copies the files symlinks point to, so the copies stand alone.
+    # It also replaces each file instead of writing into it: the running
+    # daemon has these libraries mapped, and `cp` onto them crashed it with
+    # SIGSEGV on the next restart.
+    run install -m 644 "${libs[@]}" "$LIB_DIR/"
 elif [ "$dry_run" -eq 1 ]; then
-    echo "+ cp -L <target>/.../libsherpa-onnx-c-api.so <target>/.../libonnxruntime*.so* $LIB_DIR/  (found after the build)"
+    echo "+ install -m 644 <target>/.../libsherpa-onnx-c-api.so <target>/.../libonnxruntime*.so* $LIB_DIR/  (found after the build)"
 else
     echo "install.sh: libsherpa-onnx-c-api.so not found under $target_dir after the build" >&2
     exit 1
