@@ -25,6 +25,7 @@ pub struct Config {
     pub ui_lang: Option<String>,
     pub stt: SttConfig,
     pub port: u16,
+    pub claude_code: ClaudeCodeConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -39,6 +40,25 @@ pub struct LlmConfig {
     /// long prompt), and it sizes the transcript sent in one call; see
     /// [`LlmConfig::transcript_budget_chars`].
     pub context_tokens: u32,
+}
+
+/// Claude Code in print mode (`claude -p`) as the summarizer of meetings
+/// marked for sync. It runs in `cwd`, so it reads the CLAUDE.md files and
+/// Claude Code memory there; other meetings keep the `llm` backend.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClaudeCodeConfig {
+    pub enabled: bool,
+    /// The `claude` executable, looked up on `PATH` unless it is a path.
+    pub command: String,
+    /// Working directory of the run. A leading `~` is the home directory;
+    /// see [`ClaudeCodeConfig::work_dir`].
+    pub cwd: PathBuf,
+    /// Passed as `--model`; unset, Claude Code picks its own default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The whole run, including any files it reads, is killed after this.
+    pub timeout_secs: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -72,6 +92,7 @@ impl Default for Config {
             ui_lang: None,
             stt: SttConfig::default(),
             port: 7474,
+            claude_code: ClaudeCodeConfig::default(),
         }
     }
 }
@@ -94,6 +115,28 @@ impl LlmConfig {
     /// window holds the prompt and the reply.
     pub fn transcript_budget_chars(&self) -> usize {
         self.context_tokens as usize * 6 / 10
+    }
+}
+
+impl Default for ClaudeCodeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: "claude".into(),
+            cwd: home(),
+            model: None,
+            timeout_secs: 600,
+        }
+    }
+}
+
+impl ClaudeCodeConfig {
+    /// `cwd` with a leading `~` replaced by the home directory.
+    pub fn work_dir(&self) -> PathBuf {
+        match self.cwd.strip_prefix("~") {
+            Ok(rest) => home().join(rest),
+            Err(_) => self.cwd.clone(),
+        }
     }
 }
 
@@ -182,6 +225,38 @@ mod tests {
         assert_eq!(config.stt.engine, "breeze");
         assert_eq!(config.stt.threads, 8);
         assert_eq!(config.port, 7474);
+        assert!(!config.claude_code.enabled);
+        assert_eq!(config.claude_code.command, "claude");
+        assert_eq!(config.claude_code.model, None);
+        assert_eq!(config.claude_code.timeout_secs, 600);
+    }
+
+    #[test]
+    fn claude_code_section_parses_and_expands_tilde() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[claude_code]\nenabled = true\ncwd = \"~/Work/Biobuild\"\nmodel = \"opus\"\n",
+        )
+        .unwrap();
+        let cc = Config::load_from(&path).unwrap().claude_code;
+        assert!(cc.enabled);
+        assert_eq!(cc.command, "claude", "unset keys keep their defaults");
+        assert_eq!(cc.model.as_deref(), Some("opus"));
+        assert_eq!(cc.work_dir(), home().join("Work/Biobuild"));
+
+        let absolute = ClaudeCodeConfig {
+            cwd: PathBuf::from("/srv/work"),
+            ..ClaudeCodeConfig::default()
+        };
+        assert_eq!(absolute.work_dir(), PathBuf::from("/srv/work"));
+        // Only a whole leading component is the home directory.
+        let tilde_name = ClaudeCodeConfig {
+            cwd: PathBuf::from("~bob/x"),
+            ..ClaudeCodeConfig::default()
+        };
+        assert_eq!(tilde_name.work_dir(), PathBuf::from("~bob/x"));
     }
 
     #[test]

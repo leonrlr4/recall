@@ -2,6 +2,7 @@
 //! them.
 
 mod claude;
+mod claude_code;
 mod http;
 mod ollama;
 mod prompts;
@@ -14,6 +15,7 @@ use recall_store::LlmConfig;
 use tokio::sync::mpsc;
 
 pub use claude::Claude;
+pub use claude_code::{CLAUDE_CODE_BUDGET_CHARS, ClaudeCode};
 pub use http::Timeouts;
 pub use ollama::Ollama;
 pub use prompts::{

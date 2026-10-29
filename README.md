@@ -193,6 +193,13 @@ model = "qwen3.6:35b-a3b"
 endpoint = "http://127.0.0.1:11434"    # Ollama only
 context_tokens = 32768                 # model context; see below
 
+[claude_code]                          # summaries of synced meetings; see below
+enabled = false
+command = "claude"
+cwd = "~/Work"                         # ~ is expanded here; default: home directory
+# model = "opus"                       # unset: Claude Code's own default
+timeout_secs = 600
+
 [stt]
 engine = "breeze"                      # the only engine; anything else is rejected
 threads = 8
@@ -216,6 +223,32 @@ a longer transcript), so the Ollama machine needs the memory for it. A
 transcript longer than `context_tokens * 0.6` characters is summarized in parts
 that are then merged, and a question about such a meeting is refused with
 "this meeting is too long for the current context; raise llm.context_tokens".
+
+### Claude Code for synced meetings
+
+With `[claude_code] enabled = true`, a meeting marked for sync is summarized by
+Claude Code in print mode instead of the `llm` backend. It runs in `cwd`, so it
+reads the CLAUDE.md files and Claude Code memory there and may look up project
+notes and repositories under it to get names, tickets and context right. Every
+other meeting, and the "ask this meeting" box, keep the `llm` backend. Install
+Claude Code and log in (`claude`, then `/login`) as the user the daemon runs
+as. Each summary runs:
+
+```sh
+claude -p --output-format json --no-session-persistence \
+  --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk \
+  --strict-mcp-config --disable-slash-commands [--model <model>] \
+  --append-system-prompt <summary instructions>
+```
+
+with the transcript on stdin. It can read and search files and nothing else: no
+edits, no shell commands, no MCP servers, no web access. The session is not
+saved, and the process (with anything it started) is killed after
+`timeout_secs`. A transcript of up to 120,000 characters goes in one call.
+When the run fails (`claude` missing, not logged in, timeout, a reply that is
+not the summary JSON), recall logs the reason and summarizes that meeting with
+the `llm` backend. `models.llm` in the meeting's `meeting.json` names the one
+that wrote the summary, e.g. `claude-code/claude-opus-5-5`.
 
 ## GPU transcription
 
@@ -326,6 +359,9 @@ There is no tool to discard or delete a meeting.
   `endpoint` at another host. With the `claude` backend, the transcript text
   with speaker names is sent to the Anthropic API for each summary and each
   question asked about a meeting.
+- With `[claude_code]` enabled, the transcript of every meeting marked for sync,
+  with speaker names, goes to Anthropic through Claude Code, together with
+  whatever files under `cwd` it reads while summarizing.
 - recall records other people's voices and keeps voice embeddings to recognise
   them. Getting their consent, and following the recording laws where you and
   they are, is up to you.

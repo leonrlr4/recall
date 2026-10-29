@@ -349,6 +349,77 @@ async fn summary_chunk_size_follows_context_tokens() {
     assert_eq!(calls.llm.load(Ordering::SeqCst), 3);
 }
 
+/// Enables `claude_code` with a fake `claude` that records each call in
+/// `called` beside itself and then runs `body`, and runs the whole pipeline
+/// on a meeting whose `sync` flag is `sync`.
+async fn run_with_claude_code(sync: bool, body: &str) -> (Fixture, Calls, Meeting) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut f = fixture();
+    let bin = f._tmp.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let script = bin.join("claude");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ncat > /dev/null\ntouch called\n{body}\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.config.claude_code.enabled = true;
+    f.config.claude_code.command = script.to_string_lossy().into_owned();
+    f.config.claude_code.cwd = bin;
+    let mut meeting = Meeting::load(&f.dir.path()).unwrap();
+    meeting.sync = sync;
+    meeting.save(&f.dir.path()).unwrap();
+
+    let calls = Calls::default();
+    let mut engines = engines(&calls, false);
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut Speakers::default(),
+        Step::Segment,
+        |_, _, _| {},
+    )
+    .await
+    .unwrap();
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    (f, calls, meeting)
+}
+
+const CLAUDE_CODE_REPLY: &str = r#"echo '{"type":"result","subtype":"success","is_error":false,"result":"{\"one_line\":\"TRL6 review.\",\"body\":\"b\"}","modelUsage":{"claude-opus-5-5":{"outputTokens":9}}}'"#;
+
+#[tokio::test]
+async fn synced_meeting_is_summarized_by_claude_code() {
+    let (f, calls, meeting) = run_with_claude_code(true, CLAUDE_CODE_REPLY).await;
+
+    assert!(f._tmp.path().join("bin/called").exists());
+    assert_eq!(calls.llm.load(Ordering::SeqCst), 0);
+    assert_eq!(meeting.summary.unwrap().one_line, "TRL6 review.");
+    assert_eq!(meeting.models["llm"], "claude-code/claude-opus-5-5");
+}
+
+#[tokio::test]
+async fn meeting_not_synced_keeps_the_local_backend() {
+    let (f, calls, meeting) = run_with_claude_code(false, CLAUDE_CODE_REPLY).await;
+
+    assert!(!f._tmp.path().join("bin/called").exists());
+    assert_eq!(calls.llm.load(Ordering::SeqCst), 1);
+    assert_eq!(meeting.models["llm"], "fake/llm");
+}
+
+#[tokio::test]
+async fn failed_claude_code_run_falls_back_to_the_local_backend() {
+    let (f, calls, meeting) = run_with_claude_code(true, "echo 'Not logged in' >&2\nexit 1").await;
+
+    assert!(f._tmp.path().join("bin/called").exists());
+    assert_eq!(calls.llm.load(Ordering::SeqCst), 1);
+    assert_eq!(meeting.summary.as_ref().unwrap().one_line, "Said hello.");
+    assert_eq!(meeting.models["llm"], "fake/llm");
+    done_at(&meeting, Step::Summarize);
+}
+
 #[tokio::test]
 async fn failed_step_is_recorded_and_later_steps_stay_pending() {
     let f = fixture();

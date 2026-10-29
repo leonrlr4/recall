@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use recall_llm::Llm;
+use recall_llm::{CLAUDE_CODE_BUDGET_CHARS, ClaudeCode, Llm};
 use recall_store::speakers::ME;
 use recall_store::{
     Config, Index, Meeting, MeetingDir, Side, SpeakerId, Speakers, Step, StepState, read_events,
@@ -297,7 +297,35 @@ impl Run<'_> {
         self.speakers.save(&self.config.speakers_path())
     }
 
+    /// Summarizes with Claude Code when the meeting is marked for sync and
+    /// `claude_code` is enabled, so the summary can draw on the user's work
+    /// notes; otherwise, or when that run fails for any reason, with the
+    /// configured backend. `models["llm"]` names whichever wrote it.
     async fn summarize(&mut self) -> Result<()> {
+        let cc = &self.config.claude_code;
+        if self.meeting.sync && cc.enabled {
+            let claude = ClaudeCode::from_config(cc);
+            let result = summarize(
+                &claude,
+                &self.meeting.segments,
+                self.speakers,
+                &self.config.summary_lang,
+                CLAUDE_CODE_BUDGET_CHARS,
+            )
+            .await;
+            match result {
+                Ok(summary) => {
+                    self.meeting.summary = Some(summary);
+                    self.meeting.models.insert("llm".into(), claude.name());
+                    return Ok(());
+                }
+                Err(err) => eprintln!(
+                    "recall: Claude Code could not summarize {}, using {} instead: {err:#}",
+                    self.meeting.id.0,
+                    self.engines.llm.name()
+                ),
+            }
+        }
         let llm = &self.engines.llm;
         let summary = summarize(
             llm.as_ref(),
