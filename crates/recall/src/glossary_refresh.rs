@@ -61,7 +61,7 @@ fn instructions() -> String {
          - people's names, as they are spoken and spelled; give a person's English and Chinese \
          names as separate terms when the notes use both\n\
          - project, product, organisation and tool names\n\
-         - ticket prefixes (BBINT)\n\
+         - ticket prefixes (PROJ)\n\
          - acronyms and technical terms in their canonical spelling (TRL6, not TRL)\n\
          Terms that are not among the candidates are welcome. Leave out generic words even \
          when they are frequent, and leave out the terms the user typed.\n\
@@ -275,8 +275,8 @@ mod tests {
 
     fn config(tmp: &Path, claude: &Path) -> Config {
         let notes = tmp.join("notes");
-        fs::create_dir_all(notes.join("people/arlene")).unwrap();
-        fs::write(notes.join("a.md"), "TRL6 和 TRL6，BBINT-220 BBINT-220").unwrap();
+        fs::create_dir_all(notes.join("people/alice")).unwrap();
+        fs::write(notes.join("a.md"), "TRL6 和 TRL6，PROJ-220 PROJ-220").unwrap();
         let mut config = Config {
             data_dir: tmp.join("data"),
             ..Config::default()
@@ -284,7 +284,7 @@ mod tests {
         config.claude_code.command = claude.display().to_string();
         config.claude_code.cwd = tmp.to_path_buf();
         config.claude_code.timeout_secs = 30;
-        config.glossary.terms = vec!["Geremy".into()];
+        config.glossary.terms = vec!["Bob".into()];
         config.glossary.sources = vec![notes];
         config
     }
@@ -293,7 +293,7 @@ mod tests {
     async fn refresh_saves_the_terms_claude_code_chose() {
         let tmp = tempfile::tempdir().unwrap();
         let answer = "Here it is:\n```json\n{\"terms\":[{\"term\":\" TRL6 \",\"reason\":\"Readiness\\nlevel\"},\
-                      {\"term\":\"trl6\"},{\"term\":\"Arlene\",\"reason\":\"Teammate\"}]}\n```";
+                      {\"term\":\"trl6\"},{\"term\":\"Alice\",\"reason\":\"Teammate\"}]}\n```";
         let claude = fake_claude(tmp.path(), answer, false);
         let config = config(tmp.path(), &claude);
 
@@ -305,7 +305,7 @@ mod tests {
             .iter()
             .map(|t| (t.term.as_str(), t.reason.as_str()))
             .collect();
-        assert_eq!(terms, [("TRL6", "Readiness level"), ("Arlene", "Teammate")]);
+        assert_eq!(terms, [("TRL6", "Readiness level"), ("Alice", "Teammate")]);
         let saved = Curated::load(&Curated::path(&config.data_dir)).unwrap();
         assert_eq!(saved, Some(curated));
 
@@ -321,9 +321,9 @@ mod tests {
         );
         let stdin = fs::read_to_string(tmp.path().join("stdin")).unwrap();
         assert!(stdin.contains("TRL6: 1, 2\n"), "{stdin}");
-        assert!(stdin.contains("BBINT-220: 1, 2\n"), "{stdin}");
-        assert!(stdin.contains("people/ directories in the notes: Arlene"));
-        assert!(stdin.contains("typed, always in the glossary: Geremy"));
+        assert!(stdin.contains("PROJ-220: 1, 2\n"), "{stdin}");
+        assert!(stdin.contains("people/ directories in the notes: Alice"));
+        assert!(stdin.contains("typed, always in the glossary: Bob"));
     }
 
     #[tokio::test]

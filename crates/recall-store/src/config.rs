@@ -418,14 +418,14 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "[claude_code]\nenabled = true\ncwd = \"~/Work/Biobuild\"\nmodel = \"opus\"\n",
+            "[claude_code]\nenabled = true\ncwd = \"~/Work/acme\"\nmodel = \"opus\"\n",
         )
         .unwrap();
         let cc = Config::load_from(&path).unwrap().claude_code;
         assert!(cc.enabled);
         assert_eq!(cc.command, "claude", "unset keys keep their defaults");
         assert_eq!(cc.model.as_deref(), Some("opus"));
-        assert_eq!(cc.work_dir(), home().join("Work/Biobuild"));
+        assert_eq!(cc.work_dir(), home().join("Work/acme"));
 
         let absolute = ClaudeCodeConfig {
             cwd: PathBuf::from("/srv/work"),
@@ -535,12 +535,12 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "[glossary]\nterms = [\"Arlene\", \"TRL6\"]\n\
+            "[glossary]\nterms = [\"Alice\", \"TRL6\"]\n\
              sources = [\"~/notes\", \"/abs/people\", \"~other/x\"]\n",
         )
         .unwrap();
         let glossary = Config::load_from(&path).unwrap().glossary;
-        assert_eq!(glossary.terms, ["Arlene", "TRL6"]);
+        assert_eq!(glossary.terms, ["Alice", "TRL6"]);
         assert_eq!(glossary.max_terms, 30);
         assert_eq!(
             glossary.source_paths(),

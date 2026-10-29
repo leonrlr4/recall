@@ -193,14 +193,14 @@ class RunCaseTest(unittest.TestCase):
 
     def test_glossary_reaches_the_run_config(self):
         d = self.make_case("zh-en", {"lines": []})
-        (d / "glossary.txt").write_text("# spoken terms\nArlene\n\n BBINT-220 \n", encoding="utf-8")
+        (d / "glossary.txt").write_text("# spoken terms\nAlice\n\n PROJ-220 \n", encoding="utf-8")
         base = self.root / "base.toml"
         base.write_text('summary_lang = "en"\n[stt]\nthreads = 4\n[glossary]\nsources = ["~/notes"]\n')
         dump = self.stub("dump", "[]")
         # The stub saves the config it was given beside itself.
         dump.write_text(f'#!/bin/sh\ncp "$RECALL_CONFIG" {self.root}/seen.toml\necho "[]"\n')
 
-        for glossary, terms, max_terms in [(True, ["Arlene", "BBINT-220"], 30), (False, [], 0)]:
+        for glossary, terms, max_terms in [(True, ["Alice", "PROJ-220"], 30), (False, [], 0)]:
             result = run.run_case(d, dump, glossary=glossary, base_config=base)
             self.assertEqual(result["status"], "ok")
             seen = run.tomllib.loads((self.root / "seen.toml").read_text())

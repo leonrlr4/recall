@@ -5,7 +5,7 @@
 //! The chosen list is the curated file (`<data_dir>/glossary.json`, see
 //! [`Curated`]), written by `recall glossary refresh`. Without it, terms are
 //! extracted from notes deterministically: a term is a ticket id
-//! (`BBINT-220`), an acronym (`TRL6`, `BII`), a CamelCase name (`BixBench`,
+//! (`PROJ-220`), an acronym (`TRL6`, `BII`), a CamelCase name (`BixBench`,
 //! `scRNA`) or a capitalised word written mid-sentence (`Capsule`, `Zenodo`),
 //! and a `people/` directory names one person per subdirectory. Chinese terms
 //! are not extracted: Breeze already spells Chinese well, and segmenting it
@@ -243,7 +243,7 @@ fn is_cluster_label(name: &str) -> bool {
 
 /// The recognition prompt for `terms`: one sentence naming as many of them,
 /// in order, as `fits` accepts, such as
-/// 「這次會議提到 Arlene、Geremy、BBINT、TRL6。」. None when not even the
+/// 「這次會議提到 Alice、Bob、PROJ、TRL6。」. None when not even the
 /// first term fits, or there are none.
 pub fn prompt_sentence(terms: &[String], fits: impl Fn(&str) -> bool) -> Option<String> {
     let sentence = |n: usize| {
@@ -350,7 +350,7 @@ fn is_markdown(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("md"))
 }
 
-/// A person's name from their directory name: `arlene` is `Arlene`,
+/// A person's name from their directory name: `alice` is `Alice`,
 /// `mary-jane` is `Mary Jane`. Names already holding capitals keep them.
 /// None for names with digits or nothing alphabetic.
 fn person_name(dir: &str) -> Option<String> {
@@ -544,7 +544,7 @@ enum Kind<'a> {
 
 /// The candidate terms in one word. A word with a path or identifier
 /// joiner (`/`, `_`, `.`, `@`) is code or an address and gives none. A
-/// ticket id (`BBINT-220`) gives itself and its project key; other
+/// ticket id (`PROJ-220`) gives itself and its project key; other
 /// hyphenated words are classified part by part (`scRNA-seq` gives `scRNA`).
 fn classify(word: &str) -> Vec<Kind<'_>> {
     if word.contains(['/', '_', '.', '@']) {
@@ -744,7 +744,7 @@ mod tests {
     #[test]
     fn classify_finds_tickets_acronyms_and_names() {
         use Kind::*;
-        assert_eq!(classify("BBINT-220"), [Term("BBINT-220"), Term("BBINT")]);
+        assert_eq!(classify("PROJ-220"), [Term("PROJ-220"), Term("PROJ")]);
         assert_eq!(classify("PR-12"), [Term("PR-12")]);
         assert_eq!(classify("TRL6"), [Term("TRL6")]);
         assert_eq!(classify("FASTQs"), [Term("FASTQ")]);
@@ -793,8 +793,8 @@ mod tests {
     #[test]
     fn ranking_prefers_terms_in_more_notes() {
         let mut counts = TermCounts::default();
-        // BixBench is in two notes; BBINT-208 three times in one.
-        counts.add_note(0, "今天看 BixBench 和 BBINT-208，BBINT-208 BBINT-208。");
+        // BixBench is in two notes; PROJ-208 three times in one.
+        counts.add_note(0, "今天看 BixBench 和 PROJ-208，PROJ-208 PROJ-208。");
         counts.add_note(
             1,
             "BixBench 再跑一次，跟 Tommy 確認。\nThe result went to Tommy.",
@@ -804,12 +804,12 @@ mod tests {
         assert_eq!(
             ranked[3],
             NoteTerm {
-                term: "BBINT-208".into(),
+                term: "PROJ-208".into(),
                 notes: 1,
                 count: 3
             }
         );
-        assert_eq!(names(ranked), ["Tommy", "BixBench", "BBINT", "BBINT-208"]);
+        assert_eq!(names(ranked), ["Tommy", "BixBench", "PROJ", "PROJ-208"]);
     }
 
     #[test]
@@ -833,12 +833,12 @@ mod tests {
     fn notes_read_people_dirs_and_markdown_only() {
         let tmp = tempfile::tempdir().unwrap();
         let people = tmp.path().join("vault/people");
-        for dir in ["arlene/trl6", "geremy", "mary-jane", "_attachments", "295"] {
+        for dir in ["alice/trl6", "bob", "mary-jane", "_attachments", "295"] {
             fs::create_dir_all(people.join(dir)).unwrap();
         }
         fs::create_dir_all(tmp.path().join("vault/.obsidian")).unwrap();
-        fs::write(people.join("arlene/trl6/a.md"), "BBINT-239 和 BBINT-239").unwrap();
-        fs::write(people.join("geremy/b.txt"), "NOTMD NOTMD").unwrap();
+        fs::write(people.join("alice/trl6/a.md"), "PROJ-239 和 PROJ-239").unwrap();
+        fs::write(people.join("bob/b.txt"), "NOTMD NOTMD").unwrap();
         fs::write(tmp.path().join("vault/.obsidian/c.md"), "HIDDEN HIDDEN").unwrap();
         let single = tmp.path().join("single.md");
         fs::write(&single, "ATAC 門檻 ATAC").unwrap();
@@ -849,32 +849,32 @@ mod tests {
             tmp.path().join("missing"),
         ]);
 
-        assert_eq!(notes.people, ["Arlene", "Geremy", "Mary Jane"]);
-        assert_eq!(names(notes.terms), ["ATAC", "BBINT", "BBINT-239"]);
+        assert_eq!(notes.people, ["Alice", "Bob", "Mary Jane"]);
+        assert_eq!(names(notes.terms), ["ATAC", "PROJ", "PROJ-239"]);
     }
 
     #[test]
     fn build_orders_user_terms_speakers_people_then_notes() {
         let tmp = tempfile::tempdir().unwrap();
-        fs::create_dir_all(tmp.path().join("people/arlene")).unwrap();
-        fs::write(tmp.path().join("n.md"), "TRL6 和 TRL6，跟 tommy 說 Arlene").unwrap();
+        fs::create_dir_all(tmp.path().join("people/alice")).unwrap();
+        fs::write(tmp.path().join("n.md"), "TRL6 和 TRL6，跟 tommy 說 Alice").unwrap();
         let mut speakers = Speakers::default();
-        speakers.add("Geremy", None);
+        speakers.add("Bob", None);
         speakers.add_unnamed("Remote 1", None);
         // Saved before names were tracked: named, but still a label.
         speakers.add("Remote 2", None);
         let config = GlossaryConfig {
-            terms: s(&["capsule whitepaper", " geremy ", ""]),
+            terms: s(&["capsule whitepaper", " bob ", ""]),
             sources: vec![tmp.path().to_path_buf()],
             max_terms: 30,
             ..GlossaryConfig::default()
         };
         let glossary = Glossary::build(&config, None, &speakers);
-        // "Me" and the unnamed voice are left out; Geremy is already a user
-        // term and Arlene already a person.
+        // "Me" and the unnamed voice are left out; Bob is already a user
+        // term and Alice already a person.
         assert_eq!(
             glossary.terms(),
-            ["capsule whitepaper", "geremy", "Arlene", "TRL6"]
+            ["capsule whitepaper", "bob", "Alice", "TRL6"]
         );
         let origins: Vec<Origin> = glossary.entries().map(|(_, o)| o).collect();
         use Origin::*;
@@ -888,7 +888,7 @@ mod tests {
             None,
             &speakers,
         );
-        assert_eq!(short.terms(), ["capsule whitepaper", "geremy"]);
+        assert_eq!(short.terms(), ["capsule whitepaper", "bob"]);
         let off = Glossary::build(
             &GlossaryConfig {
                 max_terms: 0,
@@ -917,16 +917,16 @@ mod tests {
     #[test]
     fn build_uses_the_curated_terms_instead_of_the_notes() {
         let tmp = tempfile::tempdir().unwrap();
-        fs::create_dir_all(tmp.path().join("people/arlene")).unwrap();
+        fs::create_dir_all(tmp.path().join("people/alice")).unwrap();
         fs::write(tmp.path().join("n.md"), "Exhibit 和 Exhibit，ZZTOP ZZTOP").unwrap();
         let mut speakers = Speakers::default();
-        speakers.add("Geremy", None);
+        speakers.add("Bob", None);
         let config = GlossaryConfig {
             terms: s(&["TRL6"]),
             sources: vec![tmp.path().to_path_buf()],
             ..GlossaryConfig::default()
         };
-        let list = curated(&["Arlene", "trl6", "BBINT"]);
+        let list = curated(&["Alice", "trl6", "PROJ"]);
 
         let glossary = Glossary::build(&config, Some(&list), &speakers);
         let entries: Vec<(&str, Origin)> = glossary.entries().collect();
@@ -934,14 +934,14 @@ mod tests {
             entries,
             [
                 ("TRL6", Origin::Typed),
-                ("Geremy", Origin::Voice),
-                ("Arlene", Origin::Curated),
-                ("BBINT", Origin::Curated),
+                ("Bob", Origin::Voice),
+                ("Alice", Origin::Curated),
+                ("PROJ", Origin::Curated),
             ]
         );
         // An empty list counts as none.
         let empty = Glossary::build(&config, Some(&curated(&[])), &speakers);
-        assert_eq!(empty.terms(), ["TRL6", "Geremy", "Arlene", "ZZTOP"]);
+        assert_eq!(empty.terms(), ["TRL6", "Bob", "Alice", "ZZTOP"]);
     }
 
     #[test]
@@ -965,7 +965,7 @@ mod tests {
 
     #[test]
     fn person_name_capitalises_dir_names() {
-        assert_eq!(person_name("arlene").as_deref(), Some("Arlene"));
+        assert_eq!(person_name("alice").as_deref(), Some("Alice"));
         assert_eq!(person_name("mary-jane").as_deref(), Some("Mary Jane"));
         assert_eq!(person_name("McKay").as_deref(), Some("McKay"));
         assert_eq!(person_name("295"), None);
@@ -974,14 +974,14 @@ mod tests {
 
     #[test]
     fn prompt_sentence_stops_before_the_limit() {
-        let terms = s(&["Arlene", "Geremy", "BBINT", "TRL6"]);
+        let terms = s(&["Alice", "Bob", "PROJ", "TRL6"]);
         assert_eq!(
             prompt_sentence(&terms, |_| true).as_deref(),
-            Some("這次會議提到 Arlene、Geremy、BBINT、TRL6。")
+            Some("這次會議提到 Alice、Bob、PROJ、TRL6。")
         );
         // 19 bytes of opening, 6 + 3 + 6 bytes of names, 3 of closing.
         let two = prompt_sentence(&terms, |p| p.len() <= 37).unwrap();
-        assert_eq!(two, "這次會議提到 Arlene、Geremy。");
+        assert_eq!(two, "這次會議提到 Alice、Bob。");
         assert_eq!(prompt_sentence(&terms, |p| p.len() <= 20), None);
         assert_eq!(prompt_sentence(&[], |_| true), None);
     }
@@ -989,8 +989,8 @@ mod tests {
     #[test]
     fn summary_note_lists_spellings() {
         assert_eq!(summary_note(&[]), "");
-        let note = summary_note(&s(&["Arlene", "TRL6"]));
-        assert!(note.contains("Arlene, TRL6."), "{note}");
+        let note = summary_note(&s(&["Alice", "TRL6"]));
+        assert!(note.contains("Alice, TRL6."), "{note}");
         assert!(note.contains("speech recognition"));
     }
 }

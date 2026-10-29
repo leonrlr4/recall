@@ -167,7 +167,7 @@
   "qa": {
     "title": "Ask across meetings",
     "intro": "Ask about your synced work meetings. Claude Code searches them with your project notes as context, and links each point to the meeting and moment it came from. The transcripts it reads are sent to Anthropic.",
-    "placeholder": "What did we decide with Arlene about TRL6 last week?",
+    "placeholder": "What did we decide with Alice about TRL6 last week?",
     "working": "Searching meetings… {seconds} s",
     "cited": "Cited meetings",
     "busy": "Another question is still being answered. Try again when it is done.",

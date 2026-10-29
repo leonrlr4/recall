@@ -159,7 +159,7 @@ In `meeting.md` the items are [Obsidian Tasks](https://publish.obsidian.md/tasks
 lines, so a vault with the Tasks plugin can query them:
 
 ```md
-- [ ] Send the TRL6 report to Arlene 👤 Arlene ⏫ 📅 2026-11-03
+- [ ] Send the TRL6 report to Alice 👤 Alice ⏫ 📅 2026-11-03
 - [x] Update the pricing page 👤 Leon 🔼 ✅ 2026-11-01
 ```
 
@@ -238,7 +238,7 @@ folder = "meetings"                    # the only folder recall writes in the va
 branch = "main"
 
 [glossary]
-terms = ["Arlene", "BBINT-220", "TRL6"] # always included, first
+terms = ["Alice", "PROJ-220", "TRL6"] # always included, first
 sources = ["~/notes/people"]           # Markdown files or directories; ~ is expanded
 max_terms = 30                         # 0 turns the glossary off
 refresh_days = 7                       # Claude Code re-chooses the terms; 0: only by hand
@@ -255,8 +255,8 @@ and each once (ignoring case), until `max_terms`:
 3. The terms Claude Code chose, from `<data_dir>/glossary.json`. Without
    that file, 4 and 5 instead.
 4. One person per subdirectory of any `people/` directory under `sources`
-   (`people/arlene/` gives `Arlene`).
-5. Terms found in the `.md` files under `sources`: ticket ids (`BBINT-220`),
+   (`people/alice/` gives `Alice`).
+5. Terms found in the `.md` files under `sources`: ticket ids (`PROJ-220`),
    acronyms (`TRL6`), CamelCase names (`BixBench`, `scRNA`) and words written
    capitalised mid-sentence in at least two notes (`Zenodo`), those in the
    most notes first. Front matter (except `description`), code, links and
@@ -274,7 +274,7 @@ meeting is being processed. `recall glossary show` prints the list the next
 run will use and where each term came from.
 
 Breeze gets the glossary as a Traditional Chinese sentence naming the terms
-(「這次會議提到 Arlene、BBINT-220、TRL6。」), cut to 120 tokens, before each
+(「這次會議提到 Alice、PROJ-220、TRL6。」), cut to 120 tokens, before each
 stretch of speech. The summary model gets the list as the known spellings, to
 correct names the transcript misheard. Put the names you most need first in
 `terms`. The prompt also changes words it does not name: on the code-switched
@@ -344,7 +344,7 @@ that wrote the summary, e.g. `claude-code/claude-opus-5-5`.
 ### Questions across meetings
 
 The Ask page in the web UI (`POST /api/ask`) takes a question such as "What
-did we decide with Arlene about TRL6 last week?" and has Claude Code answer it
+did we decide with Alice about TRL6 last week?" and has Claude Code answer it
 from your synced meetings. The run is the one above with `--output-format stream-json`, plus
 `recall mcp --synced-only` as its only MCP server (`--mcp-config` with
 `--strict-mcp-config`) and its tools allowed. That server offers only the read

@@ -167,7 +167,7 @@
   "qa": {
     "title": "跨會議提問",
     "intro": "針對已同步的工作會議提問。Claude Code 會參考你的專案筆記搜尋會議，並把每個重點連回出處的會議和時間點。它讀到的逐字稿會傳給 Anthropic。",
-    "placeholder": "上週跟 Arlene 談 TRL6 決定了什麼？",
+    "placeholder": "上週跟 Alice 談 TRL6 決定了什麼？",
     "working": "搜尋會議中… {seconds} 秒",
     "cited": "引用的會議",
     "busy": "上一個問題還在回答中，請等它完成再問。",

@@ -824,13 +824,13 @@ mod tests {
 
         // With a glossary prompt the speech is still recognised and the
         // silence still gives nothing.
-        let terms: Vec<String> = ["Arlene", "Geremy", "BBINT-220", "TRL6"]
+        let terms: Vec<String> = ["Alice", "Bob", "PROJ-220", "TRL6"]
             .map(String::from)
             .to_vec();
         whisper.set_glossary(&terms);
         assert_eq!(
             whisper.prompt(),
-            Some("這次會議提到 Arlene、Geremy、BBINT-220、TRL6。")
+            Some("這次會議提到 Alice、Bob、PROJ-220、TRL6。")
         );
         let prompted = whisper.transcribe(&samples, &regions, "zh").unwrap();
         let text = prompted
@@ -857,7 +857,7 @@ mod tests {
         assert!(silence.is_empty(), "{silence:?}");
 
         // A glossary too long for the prompt is cut at a whole term.
-        let many: Vec<String> = (0..200).map(|i| format!("BBINT-{i}")).collect();
+        let many: Vec<String> = (0..200).map(|i| format!("PROJ-{i}")).collect();
         whisper.set_glossary(&many);
         let prompt = whisper.prompt().unwrap().to_string();
         assert!(prompt.ends_with('。'), "{prompt}");

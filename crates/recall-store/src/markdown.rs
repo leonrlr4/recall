@@ -450,8 +450,8 @@ tags: []
     fn done_action_is_a_checked_task_with_done_date() {
         let at = Utc.with_ymd_and_hms(2026, 11, 1, 4, 0, 0).unwrap();
         let action = ActionItem {
-            text: "寄 TRL6 報告給 Arlene".into(),
-            owner: Some("Arlene".into()),
+            text: "寄 TRL6 報告給 Alice".into(),
+            owner: Some("Alice".into()),
             due: Some("2026-11-03".into()),
             priority: Some(Priority::High),
             done: true,
@@ -461,7 +461,7 @@ tags: []
         let done = at.with_timezone(&Local).date_naive();
         assert_eq!(
             action_line(&action, &ZH_TW),
-            format!("- [x] 寄 TRL6 報告給 Arlene 👤 Arlene ⏫ 📅 2026-11-03 ✅ {done}")
+            format!("- [x] 寄 TRL6 報告給 Alice 👤 Alice ⏫ 📅 2026-11-03 ✅ {done}")
         );
         let open = ActionItem {
             due: Some("next sprint".into()),
@@ -470,7 +470,7 @@ tags: []
         };
         assert_eq!(
             action_line(&open, &EN),
-            "- [ ] 寄 TRL6 報告給 Arlene 👤 Arlene (due next sprint) ⏫"
+            "- [ ] 寄 TRL6 報告給 Alice 👤 Alice (due next sprint) ⏫"
         );
     }
 

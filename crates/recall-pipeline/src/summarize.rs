@@ -246,7 +246,7 @@ fn weekday(text: &str) -> Option<Weekday> {
 
 /// Lowest similarity at which a new action item counts as a rewording of an
 /// old one. A reworded Chinese or English task scores about 0.8 (`寄 TRL6
-/// 報告給 Arlene` against `把 TRL6 報告寄給 Arlene` is 0.81); different
+/// 報告給 Amelia` against `把 TRL6 報告寄給 Amelia` is 0.81); different
 /// tasks from one meeting rarely pass 0.4.
 const SAME_TASK: f64 = 0.6;
 
@@ -480,7 +480,7 @@ mod tests {
     async fn summarize_gives_the_glossary_to_the_model() {
         let (segments, speakers) = meeting();
         let llm = FakeLlm::new(|_, _| SUMMARY.into());
-        let glossary = ["Arlene".to_string(), "BBINT-220".to_string()];
+        let glossary = ["Amelia".to_string(), "PROJ-220".to_string()];
 
         summarize(
             &llm,
@@ -497,7 +497,7 @@ mod tests {
         let system = &llm.calls()[0].0;
         assert!(system.starts_with(&summary_prompt("zh-TW")));
         assert!(system.contains(&glossary::summary_note(&glossary)));
-        assert!(system.contains("Arlene, BBINT-220."), "{system}");
+        assert!(system.contains("Amelia, PROJ-220."), "{system}");
     }
 
     #[tokio::test]
@@ -680,14 +680,14 @@ mod tests {
     #[test]
     fn carry_done_matches_reworded_items() {
         let previous = [
-            done("寄 TRL6 報告給 Arlene", 29),
+            done("寄 TRL6 報告給 Amelia", 29),
             item("Book the meeting room"),
             done("Update the pricing page", 30),
         ];
         let mut summary = Summary {
             actions: vec![
                 item("Update pricing page copy"),
-                item("把 TRL6 報告寄給 Arlene"),
+                item("把 TRL6 報告寄給 Amelia"),
                 item("Book the meeting room"),
                 item("Write the onboarding guide"),
             ],
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn similarity_ignores_case_and_punctuation() {
         assert_eq!(similarity("Ship it!", "ship it"), 1.0);
-        assert!(similarity("寄 TRL6 報告給 Arlene", "把 TRL6 報告寄給 Arlene") > 0.8);
+        assert!(similarity("寄 TRL6 報告給 Amelia", "把 TRL6 報告寄給 Amelia") > 0.8);
         assert!(similarity("Book the room", "Fix the export timeout") < SAME_TASK);
         assert_eq!(similarity("", "x"), 0.0);
     }
