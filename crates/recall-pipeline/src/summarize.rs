@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use recall_llm::{Llm, meeting_transcript, parse_summary, summary_prompt};
 use recall_store::{Segment, Speakers, Summary};
 
+use crate::glossary;
+
 /// System prompt for merging the summaries of consecutive parts of one long
 /// meeting: the summary prompt, which fixes the output keys and language,
 /// followed by what the input is this time.
@@ -19,7 +21,9 @@ pub fn merge_prompt(lang: &str) -> String {
     )
 }
 
-/// Summarizes the transcript with `llm`, in `lang`.
+/// Summarizes the transcript with `llm`, in `lang`. `glossary` holds the
+/// right spellings of names and terms, which the model is asked to use for
+/// misheard ones; see [`glossary::summary_note`].
 ///
 /// A transcript of at most `max_chars` characters goes to the model in one
 /// call. A longer one is cut at line boundaries into chunks of at most
@@ -35,13 +39,14 @@ pub async fn summarize(
     segments: &[Segment],
     speakers: &Speakers,
     lang: &str,
+    glossary: &[String],
     max_chars: usize,
 ) -> Result<Summary> {
     if segments.is_empty() {
         return Ok(Summary::default());
     }
     let text = meeting_transcript(segments, speakers);
-    let system = summary_prompt(lang);
+    let system = summary_prompt(lang) + &glossary::summary_note(glossary);
     let mut summary = if text.chars().count() <= max_chars {
         parse_summary(&llm.complete(&system, &text).await?)?
     } else {
@@ -175,7 +180,7 @@ mod tests {
     async fn summarize_empty_transcript_is_empty_without_calling_llm() {
         let llm = FakeLlm::new(|_, _| SUMMARY.into());
 
-        let summary = summarize(&llm, &[], &Speakers::default(), "en", 60_000)
+        let summary = summarize(&llm, &[], &Speakers::default(), "en", &[], 60_000)
             .await
             .unwrap();
 
@@ -192,7 +197,7 @@ mod tests {
         let (segments, speakers) = meeting();
         let llm = FakeLlm::new(|_, _| format!("```json\n{SUMMARY}\n```"));
 
-        let summary = summarize(&llm, &segments, &speakers, "en", 60_000)
+        let summary = summarize(&llm, &segments, &speakers, "en", &[], 60_000)
             .await
             .unwrap();
 
@@ -207,6 +212,22 @@ mod tests {
             calls[0].1,
             "[00:00] Me: Morning.\n[00:02] Tom: Ship it Friday.\n[00:05] Remote: Agreed.\n"
         );
+    }
+
+    #[tokio::test]
+    async fn summarize_gives_the_glossary_to_the_model() {
+        let (segments, speakers) = meeting();
+        let llm = FakeLlm::new(|_, _| SUMMARY.into());
+        let glossary = ["Arlene".to_string(), "BBINT-220".to_string()];
+
+        summarize(&llm, &segments, &speakers, "zh-TW", &glossary, 60_000)
+            .await
+            .unwrap();
+
+        let system = &llm.calls()[0].0;
+        assert!(system.starts_with(&summary_prompt("zh-TW")));
+        assert!(system.ends_with(&glossary::summary_note(&glossary)));
+        assert!(system.contains("Arlene, BBINT-220."), "{system}");
     }
 
     #[tokio::test]
@@ -229,7 +250,7 @@ mod tests {
             }
         });
 
-        let summary = summarize(&llm, &segments, &speakers, "zh-TW", 100)
+        let summary = summarize(&llm, &segments, &speakers, "zh-TW", &[], 100)
             .await
             .unwrap();
 
@@ -259,7 +280,7 @@ mod tests {
         let segments = [line(0, 1_000, Side::Me, "me", &"字".repeat(150))];
         let llm = FakeLlm::new(|_, _| SUMMARY.into());
 
-        summarize(&llm, &segments, &speakers, "zh-TW", 100)
+        summarize(&llm, &segments, &speakers, "zh-TW", &[], 100)
             .await
             .unwrap();
 
@@ -273,7 +294,7 @@ mod tests {
         let (segments, speakers) = meeting();
         let llm = FakeLlm::new(|_, _| "Sorry, I cannot summarize this meeting.".into());
 
-        let err = summarize(&llm, &segments, &speakers, "en", 60_000)
+        let err = summarize(&llm, &segments, &speakers, "en", &[], 60_000)
             .await
             .unwrap_err();
 
@@ -297,7 +318,7 @@ mod tests {
             }
         });
 
-        let err = summarize(&llm, &segments, &speakers, "en", 100)
+        let err = summarize(&llm, &segments, &speakers, "en", &[], 100)
             .await
             .unwrap_err();
 

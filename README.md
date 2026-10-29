@@ -209,7 +209,37 @@ remote = ""                            # git URL of a shared vault; empty: off
 dir = ""                               # recall's clone; empty: <data_dir>/vault, ~ expands
 folder = "meetings"                    # the only folder recall writes in the vault
 branch = "main"
+[glossary]
+terms = ["Arlene", "BBINT-220", "TRL6"] # always included, first
+sources = ["~/notes/people"]           # Markdown files or directories; ~ is expanded
+max_terms = 30                         # 0 turns the glossary off
 ```
+
+### Glossary
+
+Each processing run builds a glossary of names and project terms that the
+transcriber and the summary model should spell right. It holds, in this order
+and each once (ignoring case), until `max_terms`:
+
+1. `terms`, as typed.
+2. The names you gave to voices on the People page.
+3. One person per subdirectory of any `people/` directory under `sources`
+   (`people/arlene/` gives `Arlene`).
+4. Terms found in the `.md` files under `sources`: ticket ids (`BBINT-220`),
+   acronyms (`TRL6`), CamelCase names (`BixBench`, `scRNA`) and words written
+   capitalised mid-sentence in at least two notes (`Zenodo`), those in the
+   most notes first. Front matter (except `description`), code, links and
+   common English words and acronyms (`API`, `PDF`) are skipped, as are
+   hidden directories and those starting with `_`.
+
+Breeze gets the glossary as a Traditional Chinese sentence naming the terms
+(「這次會議提到 Arlene、BBINT-220、TRL6。」), cut to 120 tokens, before each
+stretch of speech. The summary model gets the list as the known spellings, to
+correct names the transcript misheard. Put the names you most need first in
+`terms`. The prompt also changes words it does not name: on the code-switched
+bench case the words stayed the same but Breeze wrote fewer, longer lines,
+and on a real two-minute call with none of the terms spoken about 8% of the
+tokens came out differently (no term was inserted).
 
 ## LLM backends
 

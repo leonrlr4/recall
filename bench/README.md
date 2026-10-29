@@ -10,6 +10,7 @@ python3 bench/run.py --case silence   # one case
 python3 bench/run.py --check          # exit 1 on an error or a missed threshold
 python3 bench/run.py --json out.json  # results with the transcripts
 python3 bench/run.py --bin ~/.local/bin/recall
+python3 bench/run.py --glossary       # each case's glossary.txt as the glossary
 python3 -m unittest bench/test_run.py # tests for the scoring
 ```
 
@@ -21,6 +22,7 @@ python3 -m unittest bench/test_run.py # tests for the scoring
 | `side` | Of the found tokens, the fraction that appear on the truth line's side (`me` or `them`) |
 | `leaked` | Transcript lines on `me` whose tokens mostly (at least half) belong to a `them` truth line in the same window, and not to a `me` truth line there: the remote voice echoing into the microphone |
 | `lines` | Number of transcript lines |
+| `mer` | Mixed error rate: edits (substitutions, deletions, insertions) from all truth tokens to all transcript tokens, each read in time order whatever the side, over the number of truth tokens |
 
 Chinese counts one token per character, other text one per lowercase word,
 punctuation stripped. `thresholds.json` sets a `min` or `max` per metric per
@@ -34,6 +36,13 @@ Each case is a directory under `fixtures/` with:
 - `computer.ogg`: what the system played (the `them` side)
 - `truth.json`: `{"lines": [{"start_ms", "end_ms", "side", "text"}]}`, with
   `"skip": true` to leave the case out
+- `glossary.txt` (optional): one term per line, `#` for comments; the run's
+  glossary under `--glossary`
+
+Every run gets its own config: the user's config file with an empty speaker
+registry (the models are linked from the real data directory) and a glossary
+of only the case's `glossary.txt` under `--glossary`, or none without it. The
+user's notes and named voices therefore never change a score.
 
 A case marked `skip`, or missing either audio file, is reported as skipped.
 

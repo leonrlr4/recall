@@ -13,6 +13,7 @@
 
 pub mod decode;
 pub mod diarize;
+pub mod glossary;
 pub mod meet_vote;
 pub mod merge;
 pub mod models;
@@ -24,6 +25,7 @@ pub mod vad;
 
 pub use decode::decode_stereo;
 pub use diarize::{Diarizer, SherpaDiarizer, Turn};
+pub use glossary::Glossary;
 pub use meet_vote::{Interval, roster, speaking_intervals, vote};
 pub use merge::merge_sides;
 pub use models::{ModelId, ModelSpec};

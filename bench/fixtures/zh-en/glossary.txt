@@ -1,0 +1,13 @@
+# English terms spoken in this case, in the order they are spoken; used as
+# the glossary by `run.py --glossary`.
+overall
+possibility
+system
+features
+popularity
+eyesight
+eye exercises
+mooncakes
+pastries
+qualified
+effective

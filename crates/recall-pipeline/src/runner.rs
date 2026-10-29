@@ -15,6 +15,7 @@ use tempfile::NamedTempFile;
 
 use crate::decode::decode_stereo;
 use crate::diarize::{Diarizer, SherpaDiarizer};
+use crate::glossary::Glossary;
 use crate::meet_vote::{roster, speaking_intervals, vote};
 use crate::merge::merge_sides;
 use crate::models::{self, ModelId};
@@ -108,6 +109,7 @@ pub async fn run_from(
     meeting.save(&path)?;
 
     let mut audio = None;
+    let mut glossary = None;
     for (i, step) in Step::ALL
         .into_iter()
         .enumerate()
@@ -125,6 +127,7 @@ pub async fn run_from(
             on_piece: &|share| {
                 on_progress(step, (i as f32 + share) / Step::ALL.len() as f32, false)
             },
+            glossary: &mut glossary,
         };
         if let Err(e) = run.step(step).await {
             let e = e.context(format!("{step:?} step"));
@@ -172,6 +175,7 @@ struct Run<'a> {
     audio: &'a mut Option<Audio>,
     /// Told the share of the current step done, after a saved piece of it.
     on_piece: &'a (dyn Fn(f32) + Sync),
+    glossary: &'a mut Option<Glossary>,
 }
 
 impl Run<'_> {
@@ -210,10 +214,19 @@ impl Run<'_> {
         Ok(self.audio.as_ref().expect("set above"))
     }
 
+    /// The glossary from the config, the speaker registry and the notes it
+    /// names, built once per run and only by the steps that use it.
+    fn glossary(&mut self) -> &Glossary {
+        self.glossary
+            .get_or_insert_with(|| Glossary::build(&self.config.glossary, self.speakers))
+    }
+
     fn transcribe(&mut self) -> Result<()> {
+        let terms = self.glossary().terms().to_vec();
         self.audio()?;
         let audio = self.audio.as_ref().expect("loaded above");
         let transcriber = &mut self.engines.transcriber;
+        transcriber.set_glossary(&terms);
         let tracks = [
             Track {
                 samples16k: &audio.me,
@@ -302,6 +315,7 @@ impl Run<'_> {
     /// notes; otherwise, or when that run fails for any reason, with the
     /// configured backend. `models["llm"]` names whichever wrote it.
     async fn summarize(&mut self) -> Result<()> {
+        let terms = self.glossary().terms().to_vec();
         let cc = &self.config.claude_code;
         if self.meeting.sync && cc.enabled {
             let claude = ClaudeCode::from_config(cc);
@@ -310,6 +324,7 @@ impl Run<'_> {
                 &self.meeting.segments,
                 self.speakers,
                 &self.config.summary_lang,
+                &terms,
                 CLAUDE_CODE_BUDGET_CHARS,
             )
             .await;
@@ -332,6 +347,7 @@ impl Run<'_> {
             &self.meeting.segments,
             self.speakers,
             &self.config.summary_lang,
+            &terms,
             self.config.llm.transcript_budget_chars(),
         )
         .await?;

@@ -25,6 +25,7 @@ pub struct Config {
     pub ui_lang: Option<String>,
     pub stt: SttConfig,
     pub port: u16,
+    pub glossary: GlossaryConfig,
     pub claude_code: ClaudeCodeConfig,
     pub vault: VaultConfig,
 }
@@ -70,6 +71,22 @@ pub struct SttConfig {
     pub threads: usize,
 }
 
+/// Names and terms that transcription and summaries should spell right.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GlossaryConfig {
+    /// Terms typed by the user, always included, before any other.
+    pub terms: Vec<String>,
+    /// Markdown files, or directories searched for them, to take more terms
+    /// from. A leading `~` is the home directory; see
+    /// [`GlossaryConfig::source_paths`].
+    pub sources: Vec<PathBuf>,
+    /// Most terms in the glossary; 0 turns the glossary off. Recognition
+    /// prompts help most with a short list of the terms that matter (10 to
+    /// 30 in published tests), so the default is 30.
+    pub max_terms: usize,
+}
+
 /// Where chosen meetings are published: a git repository holding an Obsidian
 /// vault that teammates read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -111,6 +128,7 @@ impl Default for Config {
             ui_lang: None,
             stt: SttConfig::default(),
             port: 7474,
+            glossary: GlossaryConfig::default(),
             claude_code: ClaudeCodeConfig::default(),
             vault: VaultConfig::default(),
         }
@@ -226,6 +244,29 @@ impl VaultConfig {
     }
 }
 
+impl Default for GlossaryConfig {
+    fn default() -> Self {
+        Self {
+            terms: Vec::new(),
+            sources: Vec::new(),
+            max_terms: 30,
+        }
+    }
+}
+
+impl GlossaryConfig {
+    /// `sources` with a leading `~` replaced by the home directory.
+    pub fn source_paths(&self) -> Vec<PathBuf> {
+        self.sources
+            .iter()
+            .map(|p| match p.strip_prefix("~") {
+                Ok(rest) => home().join(rest),
+                Err(_) => p.clone(),
+            })
+            .collect()
+    }
+}
+
 impl Config {
     /// Loads the config from [`Config::path`].
     pub fn load() -> Result<Self> {
@@ -320,6 +361,9 @@ mod tests {
         assert_eq!(config.stt.engine, "breeze");
         assert_eq!(config.stt.threads, 8);
         assert_eq!(config.port, 7474);
+        assert!(config.glossary.terms.is_empty());
+        assert!(config.glossary.sources.is_empty());
+        assert_eq!(config.glossary.max_terms, 30);
         assert!(!config.claude_code.enabled);
         assert_eq!(config.claude_code.command, "claude");
         assert_eq!(config.claude_code.model, None);
@@ -434,5 +478,29 @@ mod tests {
             ..VaultConfig::default()
         };
         assert!(no_branch.validate().unwrap_err().contains("vault.branch"));
+    }
+
+    #[test]
+    fn glossary_parses_and_expands_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[glossary]\nterms = [\"Arlene\", \"TRL6\"]\n\
+             sources = [\"~/notes\", \"/abs/people\", \"~other/x\"]\n",
+        )
+        .unwrap();
+        let glossary = Config::load_from(&path).unwrap().glossary;
+        assert_eq!(glossary.terms, ["Arlene", "TRL6"]);
+        assert_eq!(glossary.max_terms, 30);
+        assert_eq!(
+            glossary.source_paths(),
+            [
+                home().join("notes"),
+                PathBuf::from("/abs/people"),
+                // Only `~` alone is the home directory, not `~user`.
+                PathBuf::from("~other/x"),
+            ]
+        );
     }
 }

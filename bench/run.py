@@ -16,17 +16,29 @@ Metrics per case:
           same window and no "me" truth line there (the remote voice echoing
           into the microphone)
   lines   number of transcript lines
+  mer     mixed error rate: the edit distance (substitutions, deletions,
+          insertions) from all truth tokens to all transcript tokens, each
+          in time order and ignoring side, over the number of truth tokens
 
 Chinese is scored per character, everything else per lowercase word, with
 punctuation stripped.
+
+Each run gets its own config: the user's config file (RECALL_CONFIG or
+~/.config/recall/config.toml) with an empty speaker registry and a
+[glossary] of only the case's glossary.txt (one term per line) when
+--glossary is given, and no glossary otherwise, so the user's notes and
+named voices never change a score.
 """
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
+import tomllib
 from collections import Counter
 from pathlib import Path
 
@@ -36,7 +48,7 @@ WINDOW_MS = 2000
 # A transcript line matches a truth line when at least this fraction of its
 # tokens belong to it; see `leaked`.
 LEAK_OVERLAP = 0.5
-METRICS = ("found", "side", "leaked", "lines")
+METRICS = ("found", "side", "leaked", "lines", "mer")
 
 _CJK = re.compile(r"([\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0002fa1f])")
 # Words, keeping inner apostrophes ("it's").
@@ -46,6 +58,30 @@ _WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 def tokenize(text):
     """Lowercase tokens: one per CJK character, one per other word."""
     return _WORD.findall(_CJK.sub(r" \1 ", text.lower()))
+
+
+def edit_distance(a, b):
+    """Levenshtein distance between token lists `a` and `b`."""
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def mer(truth_lines, transcript):
+    """Mixed error rate of `transcript` against `truth_lines`, both read
+    in time order whatever their side; None without truth tokens."""
+    def ordered(lines):
+        key = lambda t: (t["start_ms"], t["end_ms"], t["side"], t["text"])
+        return [tok for t in sorted(lines, key=key) for tok in tokenize(t["text"])]
+
+    ref = ordered(truth_lines)
+    if not ref:
+        return None
+    return edit_distance(ref, ordered(transcript)) / len(ref)
 
 
 def _overlaps(a, lo, hi):
@@ -125,6 +161,7 @@ def score(truth, transcript):
         "side": right_side / found if found else None,
         "leaked": leaked,
         "lines": len(transcript),
+        "mer": mer(lines, transcript),
     }
 
 
@@ -171,8 +208,63 @@ def parse_transcript(stdout):
     return data if ok else None
 
 
-def run_case(case_dir, binary):
-    """Runs and scores one case. Status is "ok", "skipped" or "error"."""
+def _toml_value(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    raise TypeError(f"cannot write {v!r} as TOML")
+
+
+def to_toml(config):
+    """`config` (scalars, lists and one level of tables) as TOML text."""
+    out = [f"{k} = {_toml_value(v)}" for k, v in config.items() if not isinstance(v, dict)]
+    for name, table in config.items():
+        if isinstance(table, dict):
+            out.append(f"\n[{name}]")
+            out += [f"{k} = {_toml_value(v)}" for k, v in table.items()]
+    return "\n".join(out) + "\n"
+
+
+def case_config(base_path, terms, tmp):
+    """Writes the config for one run into the directory `tmp` and returns
+    its path: the config at `base_path` (if any) with `data_dir` moved into
+    `tmp`, its models linked from the real one, and the glossary set to
+    `terms` alone (None turns it off)."""
+    base = {}
+    if base_path.is_file():
+        base = tomllib.loads(base_path.read_text(encoding="utf-8"))
+    home = os.environ.get("RECALL_HOME") or str(Path.home() / ".local/share/recall")
+    models = Path(base.get("data_dir", home)).expanduser() / "models"
+    data = Path(tmp) / "data"
+    data.mkdir()
+    (data / "models").symlink_to(models, target_is_directory=True)
+    base["data_dir"] = str(data)
+    base["glossary"] = {"terms": list(terms or []), "sources": [], "max_terms": 30 if terms else 0}
+    path = Path(tmp) / "config.toml"
+    path.write_text(to_toml(base), encoding="utf-8")
+    return path
+
+
+def read_glossary(case_dir):
+    """The terms in a case's glossary.txt, one per line; [] without one."""
+    path = Path(case_dir) / "glossary.txt"
+    if not path.is_file():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [t.strip() for t in lines if t.strip() and not t.lstrip().startswith("#")]
+
+
+def run_case(case_dir, binary, glossary=False, base_config=None):
+    """Runs and scores one case. Status is "ok", "skipped" or "error".
+
+    With `glossary`, the case's glossary.txt is the run's glossary.
+    `base_config` is the user's config file the run's config starts from.
+    """
     case_dir = Path(case_dir)
     result = {"case": case_dir.name}
     truth = json.loads((case_dir / "truth.json").read_text(encoding="utf-8"))
@@ -183,11 +275,18 @@ def run_case(case_dir, binary):
         return {**result, "status": "skipped", "reason": "audio missing"}
 
     cmd = [str(binary), "transcribe-file", "--mic", str(mic), "--computer", str(computer), "--json"]
+    if base_config is None:
+        base_config = Path(os.environ.get("RECALL_CONFIG") or Path.home() / ".config/recall/config.toml")
+    terms = read_glossary(case_dir) if glossary else []
+    if glossary:
+        result["glossary"] = terms
     started = time.monotonic()
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-    except OSError as e:
-        return {**result, "status": "error", "reason": str(e)}
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {**os.environ, "RECALL_CONFIG": str(case_config(base_config, terms, tmp))}
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        except OSError as e:
+            return {**result, "status": "error", "reason": str(e)}
     seconds = time.monotonic() - started
     if proc.returncode != 0:
         reason = proc.stderr.strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
@@ -226,6 +325,8 @@ def main(argv=None):
     parser.add_argument("--check", action="store_true",
                         help="exit 1 when a case errors or misses its thresholds")
     parser.add_argument("--json", type=Path, help="write results to this file")
+    parser.add_argument("--glossary", action="store_true",
+                        help="give each case its glossary.txt as the glossary (default: none)")
     parser.add_argument("--fixtures", type=Path, default=BENCH / "fixtures", help=argparse.SUPPRESS)
     parser.add_argument("--thresholds", type=Path, default=BENCH / "thresholds.json",
                         help=argparse.SUPPRESS)
@@ -242,7 +343,7 @@ def main(argv=None):
     results = []
     failed = False
     for d in cases:
-        r = run_case(d, args.bin)
+        r = run_case(d, args.bin, glossary=args.glossary)
         if r["status"] == "ok":
             r["failures"] = check(r, thresholds.get(d.name, {}))
         failed |= r["status"] == "error" or bool(r.get("failures"))

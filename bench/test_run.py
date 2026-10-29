@@ -115,8 +115,25 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(s["found"], 0.0)
         self.assertIsNone(s["side"])
 
+    def test_mer_counts_edits_over_truth_tokens(self):
+        truth = {"lines": [
+            truth_line(0, 2000, "them", "這段 export 會 timeout"),
+            truth_line(3000, 4000, "me", "好"),
+        ]}
+        # One substitution (段 -> 個), one deletion (會), one insertion (啊),
+        # over 6 truth tokens; side and line breaks do not matter.
+        transcript = [
+            line(3000, 4000, "them", "好啊"),
+            line(0, 1000, "me", "這個 Export"),
+            line(1000, 2000, "me", "timeout"),
+        ]
+        self.assertAlmostEqual(run.score(truth, transcript)["mer"], 3 / 6)
+        self.assertEqual(run.score(truth, [])["mer"], 1.0)
+        self.assertEqual(run.edit_distance(["a", "b"], ["b", "a"]), 2)
+
     def test_empty_truth_counts_lines_only(self):
         s = run.score({"lines": []}, [line(0, 1000, "me", "uh")])
+        self.assertIsNone(s["mer"])
         self.assertIsNone(s["found"])
         self.assertIsNone(s["side"])
         self.assertEqual(s["leaked"], 0)
@@ -173,6 +190,24 @@ class RunCaseTest(unittest.TestCase):
         result = run.run_case(d, self.bin)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["lines"], 0)
+
+    def test_glossary_reaches_the_run_config(self):
+        d = self.make_case("zh-en", {"lines": []})
+        (d / "glossary.txt").write_text("# spoken terms\nArlene\n\n BBINT-220 \n", encoding="utf-8")
+        base = self.root / "base.toml"
+        base.write_text('summary_lang = "en"\n[stt]\nthreads = 4\n[glossary]\nsources = ["~/notes"]\n')
+        dump = self.stub("dump", "[]")
+        # The stub saves the config it was given beside itself.
+        dump.write_text(f'#!/bin/sh\ncp "$RECALL_CONFIG" {self.root}/seen.toml\necho "[]"\n')
+
+        for glossary, terms, max_terms in [(True, ["Arlene", "BBINT-220"], 30), (False, [], 0)]:
+            result = run.run_case(d, dump, glossary=glossary, base_config=base)
+            self.assertEqual(result["status"], "ok")
+            seen = run.tomllib.loads((self.root / "seen.toml").read_text())
+            self.assertEqual(seen["glossary"], {"terms": terms, "sources": [], "max_terms": max_terms})
+            self.assertEqual(seen["summary_lang"], "en")
+            self.assertEqual(seen["stt"], {"threads": 4})
+            self.assertTrue(seen["data_dir"].endswith("/data"))
 
     def test_accepts_segments_object(self):
         d = self.make_case("silence", {"lines": []})

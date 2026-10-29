@@ -13,6 +13,7 @@ use whisper_rs::{
 };
 
 use crate::decode::SAMPLE_RATE;
+use crate::glossary;
 use crate::vad::Region;
 
 /// A word (for Chinese, usually one character) with its time on the
@@ -63,6 +64,11 @@ pub trait Transcriber: Send {
 
     /// Name recorded in the meeting's metadata.
     fn model_name(&self) -> String;
+
+    /// Biases the following calls toward spelling `terms` (names and project
+    /// terms, most useful first) as given. An empty list removes the bias.
+    /// Engines that cannot take a prompt ignore it.
+    fn set_glossary(&mut self, _terms: &[String]) {}
 }
 
 /// One 16 kHz mono track and its speech regions, in time order.
@@ -86,12 +92,26 @@ const GAP_MS: u32 = 300;
 const MIN_WINDOW_SAMPLES: usize = SAMPLE_RATE as usize;
 const SAMPLES_PER_MS: usize = SAMPLE_RATE as usize / 1_000;
 
+/// Most tokens in the initial prompt. whisper.cpp keeps at most 224 (half
+/// its text context) and drops the start of a longer prompt; a shorter one
+/// also leaves the decoder less text to copy into its output.
+const PROMPT_MAX_TOKENS: usize = 120;
+/// Room given to `tokenize`. whisper-rs reads only -1 as failure and turns
+/// any other negative "needed" count into a length, so the room must exceed
+/// every possible count: a text never has more tokens than bytes, and only
+/// shorter texts are tokenized.
+const TOKENIZE_ROOM: usize = 1_024;
+
 /// Breeze ASR 25 (or any ggml whisper model) through whisper.cpp.
 pub struct WhisperTranscriber {
     ctx: WhisperContext,
     state: WhisperState,
-    /// Everything but the language, built once.
+    /// Everything but the language and the prompt, built once.
+    base: FullParams<'static, 'static>,
+    /// `base` with the current prompt.
     params: FullParams<'static, 'static>,
+    /// The current initial prompt, if any.
+    prompt: Option<String>,
     name: String,
 }
 
@@ -118,16 +138,11 @@ impl WhisperTranscriber {
         params.set_no_context(true);
         params.set_single_segment(false);
         params.set_suppress_blank(true);
-        // No initial prompt. While sherpa-onnx was linked statically, any
-        // prompt aborted `whisper_tokenize` with "free(): invalid pointer"
-        // (its older-GCC std::regex instantiations replaced whisper.cpp's).
-        // With the shared libraries that crash is gone: tested on
-        // 2026-10-28, "繁體中文，English terms as is。" tokenized and
-        // transcribed the fixture. But Breeze then hallucinates on silence:
-        // the 700 ms of leading silence in `whisper_transcribes_fixture`
-        // came out as "In this case, the word is not used.", which the noise
-        // filter does not catch. Traditional output comes from
-        // `to_traditional` instead.
+        // No initial prompt here; see `set_glossary`. While sherpa-onnx was
+        // linked statically, any prompt aborted `whisper_tokenize` with
+        // "free(): invalid pointer" (its older-GCC std::regex instantiations
+        // replaced whisper.cpp's); with the shared libraries it works.
+        // Traditional output comes from `to_traditional`, not from a prompt.
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -140,9 +155,25 @@ impl WhisperTranscriber {
         Ok(Self {
             ctx,
             state,
+            base: params.clone(),
             params,
+            prompt: None,
             name,
         })
+    }
+
+    /// The initial prompt in use, if any.
+    pub fn prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
+    }
+
+    /// Whether `text` tokenizes to at most [`PROMPT_MAX_TOKENS`] tokens.
+    fn fits_prompt(&self, text: &str) -> bool {
+        text.len() < TOKENIZE_ROOM
+            && self
+                .ctx
+                .tokenize(text, TOKENIZE_ROOM)
+                .is_ok_and(|t| t.len() <= PROMPT_MAX_TOKENS)
     }
 }
 
@@ -193,6 +224,23 @@ impl Transcriber for WhisperTranscriber {
 
     fn model_name(&self) -> String {
         self.name.clone()
+    }
+
+    /// Sets the initial prompt to a sentence naming as many of `terms` as
+    /// fit in [`PROMPT_MAX_TOKENS`]; see [`glossary::prompt_sentence`].
+    /// whisper.cpp reads it before each window, and every window is glued
+    /// from regions VAD found speech in. whisper-rs leaks the C copy of each
+    /// prompt it is given, so an unchanged prompt is not set again.
+    fn set_glossary(&mut self, terms: &[String]) {
+        let prompt = glossary::prompt_sentence(terms, |p| self.fits_prompt(p));
+        if prompt == self.prompt {
+            return;
+        }
+        self.params = self.base.clone();
+        if let Some(p) = &prompt {
+            self.params.set_initial_prompt(p);
+        }
+        self.prompt = prompt;
     }
 }
 
@@ -773,6 +821,50 @@ mod tests {
 
         let nul = whisper.transcribe(&samples, &regions, "z\0h").unwrap_err();
         assert!(format!("{nul:#}").contains("NUL"), "{nul:#}");
+
+        // With a glossary prompt the speech is still recognised and the
+        // silence still gives nothing.
+        let terms: Vec<String> = ["Arlene", "Geremy", "BBINT-220", "TRL6"]
+            .map(String::from)
+            .to_vec();
+        whisper.set_glossary(&terms);
+        assert_eq!(
+            whisper.prompt(),
+            Some("這次會議提到 Arlene、Geremy、BBINT-220、TRL6。")
+        );
+        let prompted = whisper.transcribe(&samples, &regions, "zh").unwrap();
+        let text = prompted
+            .iter()
+            .map(|u| u.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        eprintln!("with prompt: {prompted:#?}");
+        assert!(
+            text.contains("nightfall") || text.contains("lamps"),
+            "{text}"
+        );
+        let silence = whisper
+            .transcribe(
+                &samples,
+                &[Region {
+                    start_ms: 0,
+                    end_ms: 700,
+                }],
+                "zh",
+            )
+            .unwrap();
+        assert!(silence.is_empty(), "{silence:?}");
+
+        // A glossary too long for the prompt is cut at a whole term.
+        let many: Vec<String> = (0..200).map(|i| format!("BBINT-{i}")).collect();
+        whisper.set_glossary(&many);
+        let prompt = whisper.prompt().unwrap().to_string();
+        assert!(prompt.ends_with('。'), "{prompt}");
+        let tokens = whisper.ctx.tokenize(&prompt, TOKENIZE_ROOM).unwrap();
+        assert!(tokens.len() <= PROMPT_MAX_TOKENS, "{}", tokens.len());
+        whisper.set_glossary(&[]);
+        assert_eq!(whisper.prompt(), None);
     }
 
     /// The fixture twice, 200 ms apart, through VAD, region merging and
