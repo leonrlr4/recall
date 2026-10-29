@@ -67,7 +67,7 @@
   const localErrors = $derived.by(() => {
     const out: Partial<Record<Field, string>> = {};
     if (!form) return out;
-    for (const f of ['debounce_secs', 'end_grace_secs', 'min_length_secs'] as const) {
+    for (const f of ['debounce_secs', 'end_grace_secs'] as const) {
       if (!isInt(form[f], 0)) out[f] = t('settings.err_seconds');
     }
     if (!isInt(form.stt.threads, 1, 256)) out['stt.threads'] = t('settings.err_threads');
@@ -218,11 +218,6 @@
             <label for={id('end_grace_secs')}>{t('settings.end_grace_secs')}</label>
             <input id={id('end_grace_secs')} class="input tnum" type="number" min="0" step="1" bind:value={form.end_grace_secs} aria-invalid={!!errors.end_grace_secs} aria-describedby={describedby('end_grace_secs')} />
             {@render below('end_grace_secs', t('settings.end_grace_secs_help'))}
-          </div>
-          <div class="field">
-            <label for={id('min_length_secs')}>{t('settings.min_length_secs')}</label>
-            <input id={id('min_length_secs')} class="input tnum" type="number" min="0" step="1" bind:value={form.min_length_secs} aria-invalid={!!errors.min_length_secs} aria-describedby={describedby('min_length_secs')} />
-            {@render below('min_length_secs', t('settings.min_length_secs_help'))}
           </div>
         </div>
 

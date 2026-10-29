@@ -155,7 +155,6 @@ export interface Config {
   allowlist: string[];
   debounce_secs: number;
   end_grace_secs: number;
-  min_length_secs: number;
   llm: LlmConfig;
   summary_lang: string;
   /** Absent when unset; `null` in a patch clears it. */

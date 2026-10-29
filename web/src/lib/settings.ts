@@ -89,7 +89,6 @@ export const FIELDS = [
   'allowlist',
   'debounce_secs',
   'end_grace_secs',
-  'min_length_secs',
   'stt.engine',
   'stt.threads',
   'llm.backend',

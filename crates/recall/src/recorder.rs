@@ -87,8 +87,6 @@ struct Active {
     /// The capture's origin, also in `.cache/clock.json`.
     clock: CaptureClock,
     source_app: Option<String>,
-    /// Started with the hotkey, so kept whatever its length.
-    by_hotkey: bool,
     /// Why the screen recording failed to start or stopped early.
     screen_error: Option<String>,
     /// The screen recording was turned off for this meeting.
@@ -188,9 +186,8 @@ impl Recorder {
     ///   `record_screen` on, starts the screen recorder. A hotkey start from
     ///   idle comes without `StartCache`, so it starts the capture first.
     /// - `Finish` stops the capture and starts keeping the recording on a
-    ///   thread of its own (see [`Recorder::poll_keeps`]), or deletes it if
-    ///   it is shorter than `min_length_secs`. A recording started with the
-    ///   hotkey is kept whatever its length.
+    ///   thread of its own (see [`Recorder::poll_keeps`]), whatever its
+    ///   length; only a recording with no audio at all is deleted.
     /// - `Discard` stops the capture and the screen recorder and deletes the
     ///   directory.
     pub fn apply(&mut self, action: Action, now: DateTime<Local>) -> Result<()> {
@@ -211,12 +208,16 @@ impl Recorder {
                     self.start(now)?;
                 }
                 tracing::info!(source_app, by_hotkey, "recording");
-                if self.notifications {
-                    notify::recording_started(&source_app);
-                }
                 if let Some(active) = &mut self.active {
+                    if self.notifications {
+                        notify::recording_started(
+                            &active.dir.id.0,
+                            &active.title,
+                            &source_app,
+                            self.config.port,
+                        );
+                    }
                     active.source_app = Some(source_app);
-                    active.by_hotkey = by_hotkey;
                 }
                 self.start_screen();
                 Ok(())
@@ -285,18 +286,12 @@ impl Recorder {
         let notifications = self.notifications;
         let job = active.clone();
         let run = move || {
-            let min_length = if job.by_hotkey {
-                Duration::ZERO
-            } else {
-                Duration::from_secs(config.min_length_secs)
-            };
             let kept = keep(
                 &job.dir,
                 &job.title,
                 job.started.to_utc(),
                 job.source_app.clone(),
                 job.screen_error.clone(),
-                min_length,
                 finalize.as_ref(),
                 &ffmpeg,
                 |meeting| {
@@ -309,13 +304,18 @@ impl Recorder {
                 Some(meeting) => {
                     tracing::info!(id = meeting.id.0, "recording kept");
                     if notifications {
-                        notify::processing(&meeting.title);
+                        notify::recording_saved(
+                            &meeting.id.0,
+                            &meeting.title,
+                            meeting.duration_ms,
+                            config.port,
+                        );
                     }
                     if let Some(wake) = &wake {
                         let _ = wake.send(());
                     }
                 }
-                None => tracing::info!(id = job.dir.id.0, "recording too short; deleted"),
+                None => tracing::info!(id = job.dir.id.0, "recording has no audio; deleted"),
             }
             Ok(kept)
         };
@@ -542,7 +542,6 @@ impl Recorder {
             started: now,
             clock,
             source_app: None,
-            by_hotkey: false,
             screen_error: None,
             screen_off: false,
         });
@@ -597,8 +596,7 @@ impl Recorder {
 
     /// Finishes every recording under `config.meetings_dir` whose `.cache/`
     /// still holds chunks or a screen video, as a crash or kill leaves them:
-    /// a cache shorter than `min_length_secs` is deleted with its directory,
-    /// the rest is encoded, its video remuxed, and saved, indexed and queued
+    /// an empty cache is deleted with its directory, the rest is encoded, its video remuxed, and saved, indexed and queued
     /// from [`Step::Segment`]. Returns the ids queued. A directory that
     /// fails is logged and skipped.
     pub fn recover(config: &Config, index: &Index, speakers: &Speakers) -> Result<Vec<MeetingId>> {
@@ -633,12 +631,12 @@ impl Recorder {
             if !dir.has_unfinished_cache() {
                 continue;
             }
-            match recover_dir(config, index, speakers, &screen.ffmpeg, &dir) {
+            match recover_dir(index, speakers, &screen.ffmpeg, &dir) {
                 Ok(Some(id)) => {
                     tracing::info!(id = id.0, "recovered a recording");
                     queued.push(id);
                 }
-                Ok(None) => tracing::info!(id = dir.id.0, "deleted a short unfinished recording"),
+                Ok(None) => tracing::info!(id = dir.id.0, "deleted an empty unfinished recording"),
                 Err(err) => {
                     tracing::error!(
                         err = format!("{err:#}"),
@@ -654,7 +652,6 @@ impl Recorder {
 
 /// Recovers one directory with an unfinished cache.
 fn recover_dir(
-    config: &Config,
     index: &Index,
     speakers: &Speakers,
     ffmpeg: &Path,
@@ -681,14 +678,12 @@ fn recover_dir(
         .and_then(|t| t.and_local_timezone(Local).earliest())
         .map_or_else(Utc::now, |t| t.to_utc());
     let title = name.get(ID_TIME_LEN + 1..).unwrap_or_default();
-    let min_length = Duration::from_secs(config.min_length_secs);
     let kept = keep(
         dir,
         title,
         started,
         None,
         None,
-        min_length,
         &finalize,
         ffmpeg,
         |meeting| queue(index, speakers, meeting),
@@ -699,8 +694,7 @@ fn recover_dir(
 /// Encodes the cache of `dir` with `finalize`, remuxes its screen video
 /// with `ffmpeg` (see [`finish_screen`]), saves `meeting.json`, hands the
 /// meeting to `queue` (index and enqueue) and clears the cache; or deletes
-/// `dir` if the cache is empty or shorter than `min_length`. Returns the
-/// meeting kept.
+/// `dir` if the cache is empty. Returns the meeting kept.
 #[allow(clippy::too_many_arguments)]
 fn keep(
     dir: &MeetingDir,
@@ -708,14 +702,13 @@ fn keep(
     started: DateTime<Utc>,
     source_app: Option<String>,
     screen_error: Option<String>,
-    min_length: Duration,
     finalize: &Finalize,
     ffmpeg: &Path,
     queue: impl FnOnce(&Meeting) -> Result<()>,
 ) -> Result<Option<Meeting>> {
     let cache = dir.cache();
     let cached = cache_duration(&cache)?;
-    if cached.is_zero() || cached < min_length {
+    if cached.is_zero() {
         remove_dir(&dir.path())?;
         return Ok(None);
     }
@@ -855,16 +848,15 @@ mod tests {
         config: Arc<Config>,
     }
 
-    fn fixture(min_length_secs: u64) -> Fixture {
-        fixture_with_screen(min_length_secs, false)
+    fn fixture() -> Fixture {
+        fixture_with_screen(false)
     }
 
-    fn fixture_with_screen(min_length_secs: u64, record_screen: bool) -> Fixture {
+    fn fixture_with_screen(record_screen: bool) -> Fixture {
         let tmp = tempfile::tempdir().unwrap();
         let config = Arc::new(Config {
             meetings_dir: tmp.path().join("meetings"),
             data_dir: tmp.path().join("data"),
-            min_length_secs,
             record_screen,
             ..Config::default()
         });
@@ -934,7 +926,7 @@ mod tests {
 
     #[test]
     fn slow_finalize_does_not_delay_the_next_recording() {
-        let f = fixture(1);
+        let f = fixture();
         let (release, released) = mpsc::channel::<()>();
         let released = Mutex::new(released);
         let mut rec = recorder(
@@ -963,7 +955,7 @@ mod tests {
 
     #[test]
     fn failed_keep_is_retried_after_the_delay() {
-        let f = fixture(1);
+        let f = fixture();
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
         let mut rec = recorder(
@@ -996,34 +988,31 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_recordings_skip_the_minimum_length() {
-        let f = fixture(120);
+    fn short_detected_recordings_are_kept() {
+        let f = fixture();
         let mut rec = recorder(&f, 2, Arc::new(|c: &Path, o: &Path| finalize(c, o)));
-        // Detected: 2 s is under the minimum, so it is deleted.
+        rec.apply(Action::StartCache, at(0)).unwrap();
+        rec.apply(auto_start(), at(0)).unwrap();
+        rec.apply(Action::Finish, at(1)).unwrap();
+        rec.wait_keeps();
+        assert_eq!(jobs(&f), 1);
+    }
+
+    #[test]
+    fn recordings_without_audio_are_deleted() {
+        let f = fixture();
+        let mut rec = recorder(&f, 0, Arc::new(|c: &Path, o: &Path| finalize(c, o)));
         rec.apply(Action::StartCache, at(0)).unwrap();
         rec.apply(auto_start(), at(0)).unwrap();
         rec.apply(Action::Finish, at(1)).unwrap();
         rec.wait_keeps();
         assert_eq!(jobs(&f), 0);
         assert_eq!(fs::read_dir(&f.config.meetings_dir).unwrap().count(), 0);
-
-        // Started by hand: kept.
-        rec.apply(
-            Action::StartRecording {
-                source_app: "hotkey".into(),
-                by_hotkey: true,
-            },
-            at(2),
-        )
-        .unwrap();
-        rec.apply(Action::Finish, at(3)).unwrap();
-        rec.wait_keeps();
-        assert_eq!(jobs(&f), 1);
     }
 
     #[test]
     fn start_writes_clock_file() {
-        let f = fixture(1);
+        let f = fixture();
         let mut rec = recorder(&f, 2, Arc::new(|c: &Path, o: &Path| finalize(c, o)));
         assert!(rec.live().is_none());
         rec.apply(Action::StartCache, at(0)).unwrap();
@@ -1038,7 +1027,7 @@ mod tests {
     }
     #[test]
     fn screen_is_remuxed_with_its_offset() {
-        let f = fixture_with_screen(1, true);
+        let f = fixture_with_screen(true);
         let mut rec = screen_recorder(&f, screen::fake::tools(f._tmp.path()));
         let dir = record_with_screen(&mut rec);
         assert_eq!(rec.screen_status(), Some("recording"));
@@ -1055,7 +1044,7 @@ mod tests {
 
     #[test]
     fn screen_is_not_recorded_when_turned_off_in_config() {
-        let f = fixture_with_screen(1, false);
+        let f = fixture_with_screen(false);
         let mut rec = screen_recorder(&f, screen::fake::tools(f._tmp.path()));
         rec.apply(hotkey_start(), at(0)).unwrap();
         let (dir, _) = rec.live().unwrap();
@@ -1067,7 +1056,7 @@ mod tests {
 
     #[test]
     fn start_failure_keeps_audio_and_records_error() {
-        let f = fixture_with_screen(1, true);
+        let f = fixture_with_screen(true);
         let tools = ScreenTools {
             gsr: f._tmp.path().join("no-such-recorder"),
             ..screen::fake::tools(f._tmp.path())
@@ -1088,7 +1077,7 @@ mod tests {
 
     #[test]
     fn early_exit_records_error() {
-        let f = fixture_with_screen(1, true);
+        let f = fixture_with_screen(true);
         let tools = ScreenTools {
             gsr: screen::fake::fakes().exiting_gsr.clone(),
             ..screen::fake::tools(f._tmp.path())
@@ -1111,7 +1100,7 @@ mod tests {
 
     #[test]
     fn screen_off_deletes_video() {
-        let f = fixture_with_screen(1, true);
+        let f = fixture_with_screen(true);
         let mut rec = screen_recorder(&f, screen::fake::tools(f._tmp.path()));
         let dir = record_with_screen(&mut rec);
 
@@ -1131,7 +1120,7 @@ mod tests {
 
     #[test]
     fn remux_failure_keeps_the_mkv() {
-        let f = fixture_with_screen(1, true);
+        let f = fixture_with_screen(true);
         let tools = ScreenTools {
             ffmpeg: screen::fake::fakes().failing_ffmpeg.clone(),
             ..screen::fake::tools(f._tmp.path())
@@ -1148,7 +1137,7 @@ mod tests {
 
     #[test]
     fn screen_status_asks_for_the_picker_when_idle_without_a_token() {
-        let f = fixture_with_screen(1, true);
+        let f = fixture_with_screen(true);
         let tools = screen::fake::tools(f._tmp.path());
         let token = tools.token.clone();
         let rec = screen_recorder(&f, tools);
@@ -1156,14 +1145,14 @@ mod tests {
         fs::write(&token, "token").unwrap();
         assert_eq!(rec.screen_status(), None);
 
-        let off = fixture_with_screen(1, false);
+        let off = fixture_with_screen(false);
         let rec = screen_recorder(&off, screen::fake::tools(off._tmp.path()));
         assert_eq!(rec.screen_status(), None);
     }
 
     #[test]
     fn recover_remuxes_before_clearing_cache() {
-        let f = fixture_with_screen(1, true);
+        let f = fixture_with_screen(true);
         // What a SIGKILL mid-recording leaves: chunks, clock and video.
         let dir = MeetingDir::create(&f.config.meetings_dir, at(0), "Meeting 14:00").unwrap();
         let mut writer = ChunkWriter::new(&dir.cache()).unwrap();
@@ -1193,7 +1182,7 @@ mod tests {
 
     #[test]
     fn recover_remuxes_an_orphaned_video_of_a_saved_meeting() {
-        let f = fixture_with_screen(1, true);
+        let f = fixture_with_screen(true);
         let mut rec = screen_recorder(&f, screen::fake::tools(f._tmp.path()));
         rec.apply(Action::StartCache, at(0)).unwrap();
         rec.apply(Action::Finish, at(1)).unwrap();

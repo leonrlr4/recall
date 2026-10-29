@@ -200,8 +200,6 @@
     "debounce_secs_help": "How long an app must hold the microphone before recording starts.",
     "end_grace_secs": "End grace (s)",
     "end_grace_secs_help": "How long to keep recording after the microphone is released.",
-    "min_length_secs": "Minimum length (s)",
-    "min_length_secs_help": "Shorter detected recordings are discarded. Recordings started by hand are always kept.",
     "stt_engine": "Speech recognition engine",
     "stt_engine_help": "The local model that turns speech into text.",
     "stt_threads": "CPU threads",

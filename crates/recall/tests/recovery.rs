@@ -19,11 +19,10 @@ fn crashed_recording(root: &Path, secs: usize) -> MeetingDir {
     dir
 }
 
-fn config(root: &Path, min_length_secs: u64) -> Config {
+fn config(root: &Path) -> Config {
     Config {
         meetings_dir: root.to_path_buf(),
         data_dir: root.join("data"),
-        min_length_secs,
         ..Config::default()
     }
 }
@@ -33,7 +32,7 @@ fn recovery_finalizes_unfinished_cache() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("meetings");
     let dir = crashed_recording(&root, 3);
-    let config = config(&root, 1);
+    let config = config(&root);
     let index = Index::open(&tmp.path().join("index.sqlite")).unwrap();
 
     let ids = Recorder::recover(&config, &index, &Speakers::default()).unwrap();
@@ -66,18 +65,17 @@ fn recovery_finalizes_unfinished_cache() {
 }
 
 #[test]
-fn recovery_deletes_short_cache() {
+fn recovery_keeps_short_cache() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("meetings");
-    let dir = crashed_recording(&root, 30);
-    let config = config(&root, 120);
+    let dir = crashed_recording(&root, 1);
+    let config = config(&root);
     let index = Index::open(&tmp.path().join("index.sqlite")).unwrap();
 
     let ids = Recorder::recover(&config, &index, &Speakers::default()).unwrap();
 
-    assert!(ids.is_empty());
-    assert!(!dir.path().exists());
-    assert!(index.next_job().unwrap().is_none());
+    assert_eq!(ids, vec![dir.id.clone()]);
+    assert!(dir.audio().is_file());
 }
 
 #[test]
@@ -85,7 +83,7 @@ fn recovery_leaves_finished_meetings_alone() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("meetings");
     let dir = crashed_recording(&root, 3);
-    let config = config(&root, 1);
+    let config = config(&root);
     let index = Index::open(&tmp.path().join("index.sqlite")).unwrap();
     Recorder::recover(&config, &index, &Speakers::default()).unwrap();
     index.next_job().unwrap();
@@ -102,7 +100,7 @@ fn recovery_after_save_only_clears_and_queues() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("meetings");
     let dir = crashed_recording(&root, 3);
-    let config = config(&root, 1);
+    let config = config(&root);
     let index = Index::open(&tmp.path().join("index.sqlite")).unwrap();
     // A crash between saving meeting.json and clearing the cache.
     std::fs::write(dir.audio(), b"encoded").unwrap();
@@ -137,7 +135,7 @@ fn recovery_does_not_queue_a_second_job() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("meetings");
     let dir = crashed_recording(&root, 3);
-    let config = config(&root, 1);
+    let config = config(&root);
     let index = Index::open(&tmp.path().join("index.sqlite")).unwrap();
     // A crash after enqueue, before the cache was cleared.
     std::fs::write(dir.audio(), b"encoded").unwrap();

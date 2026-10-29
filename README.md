@@ -69,8 +69,9 @@ recall status
 ```
 
 Open <http://127.0.0.1:7474>. Join a call in an allowlisted app and recording
-starts by itself; a desktop notification says so, another says when the summary
-is ready.
+starts by itself. One desktop notification follows each meeting: it says
+recording, then saved, then summary ready (or which step failed), replacing
+itself each time. Clicking it opens the meeting page.
 
 To record or stop by hand, bind the CLI commands to keys. Hyprland
 (`~/.config/hypr/hyprland.conf`):
@@ -111,8 +112,8 @@ recall watches PipeWire for applications that open the microphone.
   those probes end within the 8 seconds and are dropped.
 - The recording ends once every allowlisted app has closed the mic for 30
   seconds, so a reconnect does not split a meeting in two.
-- Detected recordings shorter than 2 minutes are deleted. A recording started
-  with `recall start` is kept whatever its length.
+- Every recording is kept whatever its length; `recall discard` throws one
+  away.
 - If the capture cannot start, a notification says so and recall tries again
   every 10 seconds while the app keeps the mic open.
 - A notification warns when the meetings folder has less than 2 GB free at
@@ -182,7 +183,6 @@ record_screen = false                  # record the screen too; see below
 allowlist = ["brave", "chromium", "chrome", "firefox", "zoom", "slack", "discord", "teams"]
 debounce_secs = 8                      # mic must stay open this long to record
 end_grace_secs = 30                    # mic closed this long ends the recording
-min_length_secs = 120                  # shorter detected recordings are deleted
 summary_lang = "zh-TW"                 # "zh-TW" or "en"
 # ui_lang = "en"                       # unset: follow the browser; a choice made in the UI wins
 port = 7474

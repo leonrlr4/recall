@@ -18,7 +18,6 @@ pub struct Config {
     pub allowlist: Vec<String>,
     pub debounce_secs: u64,
     pub end_grace_secs: u64,
-    pub min_length_secs: u64,
     pub llm: LlmConfig,
     pub summary_lang: String,
     /// UI language, if set.
@@ -68,7 +67,6 @@ impl Default for Config {
             .to_vec(),
             debounce_secs: 8,
             end_grace_secs: 30,
-            min_length_secs: 120,
             llm: LlmConfig::default(),
             summary_lang: "zh-TW".into(),
             ui_lang: None,
@@ -173,14 +171,7 @@ mod tests {
                 "brave", "chromium", "chrome", "firefox", "zoom", "slack", "discord", "teams"
             ]
         );
-        assert_eq!(
-            (
-                config.debounce_secs,
-                config.end_grace_secs,
-                config.min_length_secs
-            ),
-            (8, 30, 120)
-        );
+        assert_eq!((config.debounce_secs, config.end_grace_secs), (8, 30));
         assert_eq!(config.llm.backend, "ollama");
         assert_eq!(config.llm.model, "qwen3.6:35b-a3b");
         assert_eq!(config.llm.endpoint, "http://127.0.0.1:11434");

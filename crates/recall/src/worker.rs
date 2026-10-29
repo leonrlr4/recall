@@ -127,12 +127,7 @@ impl Worker {
                     meeting: job.meeting.clone(),
                 });
                 if self.notifications {
-                    let url = format!(
-                        "http://127.0.0.1:{}/m/{}",
-                        self.config.port,
-                        percent_encode(&job.meeting.0)
-                    );
-                    notify::summary_ready(&title, &url);
+                    notify::summary_ready(&job.meeting.0, &title, self.config.port);
                 }
             }
             Err((step, err)) => {
@@ -148,7 +143,12 @@ impl Worker {
                     error,
                 });
                 if self.notifications {
-                    notify::failed(&title, &step_name(step));
+                    notify::processing_failed(
+                        &job.meeting.0,
+                        &title,
+                        &step_name(step),
+                        self.config.port,
+                    );
                 }
             }
         }

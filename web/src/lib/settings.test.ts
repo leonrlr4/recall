@@ -9,7 +9,6 @@ const base: Config = {
   allowlist: ['zoom', 'firefox'],
   debounce_secs: 8,
   end_grace_secs: 30,
-  min_length_secs: 120,
   llm: { backend: 'ollama', model: 'qwen', endpoint: 'http://127.0.0.1:11434', context_tokens: 32768 },
   summary_lang: 'zh-TW',
   stt: { engine: 'breeze', threads: 8 },
