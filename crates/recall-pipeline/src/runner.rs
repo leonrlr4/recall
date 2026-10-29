@@ -214,11 +214,12 @@ impl Run<'_> {
         Ok(self.audio.as_ref().expect("set above"))
     }
 
-    /// The glossary from the config, the speaker registry and the notes it
-    /// names, built once per run and only by the steps that use it.
+    /// The glossary from the config, the speaker registry and the curated
+    /// file or the notes, built once per run and only by the steps that use
+    /// it.
     fn glossary(&mut self) -> &Glossary {
         self.glossary
-            .get_or_insert_with(|| Glossary::build(&self.config.glossary, self.speakers))
+            .get_or_insert_with(|| Glossary::load(self.config, self.speakers))
     }
 
     fn transcribe(&mut self) -> Result<()> {

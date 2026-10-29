@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -9,9 +10,11 @@ use async_trait::async_trait;
 use chrono::Local;
 use clap::{Parser, Subcommand};
 use recall::control::{self, Command, Reply};
-use recall::selftest;
 use recall::worker::step_name;
+use recall::{glossary_refresh, selftest};
 use recall_llm::Llm;
+use recall_pipeline::Glossary;
+use recall_pipeline::glossary::{Curated, Origin};
 use recall_pipeline::models::{self, ModelId};
 use recall_pipeline::runner::{Engines, run_from};
 use recall_server::SelfTestResult;
@@ -75,6 +78,11 @@ enum Cmd {
         #[command(subcommand)]
         command: ModelsCmd,
     },
+    /// Show or refresh the glossary of names and terms.
+    Glossary {
+        #[command(subcommand)]
+        command: GlossaryCmd,
+    },
     /// Transcribe a mic and a system recording as a meeting would be, without
     /// the summary, and print the segments.
     #[command(hide = true)]
@@ -105,6 +113,16 @@ enum IndexCmd {
 enum ModelsCmd {
     /// Download any missing model.
     Download,
+}
+
+#[derive(Subcommand)]
+enum GlossaryCmd {
+    /// Print the glossary the next run will use, each term with where it
+    /// came from.
+    Show,
+    /// Have Claude Code choose the terms from the glossary sources, with
+    /// read-only tools, and save them as <data_dir>/glossary.json.
+    Refresh,
 }
 
 /// How long the daemon's runtime may take to wind down its tasks once
@@ -173,6 +191,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Models {
             command: ModelsCmd::Download,
         } => return download_models(&Config::load()?),
+        Cmd::Glossary {
+            command: GlossaryCmd::Show,
+        } => return show_glossary(&Config::load()?),
+        Cmd::Glossary {
+            command: GlossaryCmd::Refresh,
+        } => return refresh_glossary(&Config::load()?),
         Cmd::TranscribeFile {
             mic,
             computer,
@@ -342,6 +366,74 @@ fn download_models(config: &Config) -> Result<ExitCode> {
             eprintln!();
         }
         println!("{file}: {}", path.display());
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Prints where the curated terms come from, then one term per line with
+/// its origin, and the reason Claude Code gave for a curated one.
+fn show_glossary(config: &Config) -> Result<ExitCode> {
+    let path = Curated::path(&config.data_dir);
+    let curated = match Curated::load(&path) {
+        Ok(curated) => curated,
+        Err(err) => {
+            eprintln!("recall: {err:#}; using the notes instead");
+            None
+        }
+    };
+    match &curated {
+        Some(c) => println!(
+            "curated: {} ({} terms, {}, {})",
+            path.display(),
+            c.terms.len(),
+            c.refreshed.with_timezone(&Local).format("%Y-%m-%d %H:%M"),
+            c.model
+        ),
+        None => println!("curated: none; terms are extracted from the notes"),
+    }
+    let speakers = Speakers::load(&config.speakers_path())?;
+    let glossary = Glossary::build(&config.glossary, curated.as_ref(), &speakers);
+    let reasons: HashMap<&str, &str> = curated
+        .iter()
+        .flat_map(|c| &c.terms)
+        .map(|t| (t.term.as_str(), t.reason.as_str()))
+        .collect();
+    let width = glossary.terms().iter().map(|t| t.chars().count()).max();
+    let mut out = std::io::stdout().lock();
+    for (term, origin) in glossary.entries() {
+        let reason = match origin {
+            Origin::Curated => reasons.get(term).copied().unwrap_or_default(),
+            _ => "",
+        };
+        let line = format!(
+            "{term:width$}  {:7}  {reason}",
+            origin.label(),
+            width = width.unwrap_or(0)
+        );
+        writeln!(out, "{}", line.trim_end())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn refresh_glossary(config: &Config) -> Result<ExitCode> {
+    if config.glossary.sources.is_empty() {
+        bail!("[glossary] sources is empty; there are no notes to choose terms from");
+    }
+    eprintln!(
+        "asking Claude Code in {} (up to {} s)...",
+        config.claude_code.work_dir().display(),
+        config.claude_code.timeout_secs
+    );
+    let runtime = tokio::runtime::Runtime::new()?;
+    let curated = runtime.block_on(glossary_refresh::refresh(config))?;
+    println!(
+        "saved {} terms from {} to {}",
+        curated.terms.len(),
+        curated.model,
+        Curated::path(&config.data_dir).display()
+    );
+    for t in &curated.terms {
+        println!("{}  {}", t.term, t.reason);
     }
     Ok(ExitCode::SUCCESS)
 }

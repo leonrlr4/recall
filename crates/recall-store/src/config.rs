@@ -85,6 +85,10 @@ pub struct GlossaryConfig {
     /// prompts help most with a short list of the terms that matter (10 to
     /// 30 in published tests), so the default is 30.
     pub max_terms: usize,
+    /// With `[claude_code]` enabled, the daemon has Claude Code choose the
+    /// terms again once the chosen list is this many days old. 0 leaves
+    /// refreshing to `recall glossary refresh`.
+    pub refresh_days: u64,
 }
 
 /// Where chosen meetings are published: a git repository holding an Obsidian
@@ -250,6 +254,7 @@ impl Default for GlossaryConfig {
             terms: Vec::new(),
             sources: Vec::new(),
             max_terms: 30,
+            refresh_days: 7,
         }
     }
 }

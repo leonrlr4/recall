@@ -36,6 +36,7 @@ use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
 use crate::control::{self, RecorderLink};
+use crate::glossary_refresh;
 use crate::meet_sink::{LiveSlot, MeetSink, Seen};
 use crate::notify;
 use crate::recorder::Recorder;
@@ -119,6 +120,9 @@ pub async fn run(config: Config) -> Result<()> {
         notifications: true,
     }
     .spawn(woken)?;
+    if config.claude_code.enabled && config.glossary.refresh_days > 0 {
+        tokio::spawn(glossary_refresh::follow(config.clone(), index.clone()));
+    }
 
     let (tx, rx) = mpsc::channel();
     let link = RecorderLink {
