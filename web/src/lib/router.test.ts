@@ -4,7 +4,7 @@ import { match, meetingPath } from './router';
 describe('router', () => {
   it('matches_the_fixed_paths', () => {
     expect(match('/')).toEqual({ name: 'list' });
-    expect(match('/todo')).toEqual({ name: 'todo' });
+    expect(match('/todo')).toEqual({ name: 'not_found' });
     expect(match('/people')).toEqual({ name: 'people' });
     expect(match('/settings')).toEqual({ name: 'settings' });
     expect(match('/ask')).toEqual({ name: 'ask' });

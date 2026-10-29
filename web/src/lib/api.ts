@@ -1,6 +1,5 @@
 import type {
   ActionItem,
-  ActionRow,
   Citation,
   Config,
   ConfigPatch,
@@ -105,11 +104,6 @@ export function deleteMeeting(id: string): Promise<void> {
 
 export function rerun(id: string, step: Step): Promise<{ job: number }> {
   return request(`${meetingUrl(id)}/rerun/${step}`, { method: 'POST' });
-}
-
-/** Every meeting's action items, newest meeting first. */
-export function actionItems(): Promise<ActionRow[]> {
-  return request(`${BASE}/action-items`);
 }
 
 /**

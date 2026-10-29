@@ -24,6 +24,8 @@
   import { live } from '../lib/live.svelte';
   import { canRenameInMeeting, renameRequest, renameSuggestions } from '../lib/people';
   import { link, meetingPath, navigate } from '../lib/router';
+  import { viewSummary } from '../lib/summaryLang';
+  import { wantedSummaryLang } from '../lib/summaryLang.svelte';
   import { shiftAfterDelete } from '../lib/transcript';
   import { STEPS, type MeetingDetail, type Person, type Segment, type Step } from '../lib/types';
   import { syncOn, vaultBusy, vaultState } from '../lib/vault';
@@ -51,6 +53,10 @@
   let rerunStep = $state<Step>('transcribe');
 
   const meeting = $derived(detail?.meeting ?? null);
+  // Chapter titles in the summary language chosen over the summary.
+  const chapters = $derived(
+    meeting?.summary ? viewSummary(meeting.summary, wantedSummaryLang()).summary.chapters : [],
+  );
   const segments = $derived(meeting?.segments ?? []);
   /** The calendar attendees other than the user who have not declined. */
   const attendees = $derived(
@@ -559,7 +565,7 @@
             src={audioUrl(id)}
             durationMs={meeting.duration_ms}
             {currentMs}
-            chapters={meeting.summary?.chapters ?? []}
+            {chapters}
             onseek={(ms) => {
               cursor = lineAt(ms);
               seek(ms);

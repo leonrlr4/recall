@@ -111,10 +111,7 @@ mod store {
             clusters: Vec::new(),
             summary: done.then(|| Summary {
                 one_line: format!("{title} went fine."),
-                body: String::new(),
-                decisions: vec![],
-                actions: vec![],
-                chapters: vec![],
+                ..Summary::default()
             }),
             models: BTreeMap::new(),
             participants_hint: Vec::new(),

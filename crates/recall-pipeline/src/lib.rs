@@ -21,6 +21,7 @@ pub mod naming;
 pub mod runner;
 pub mod summarize;
 pub mod transcribe;
+pub mod translate;
 pub mod vad;
 
 pub use decode::decode_stereo;

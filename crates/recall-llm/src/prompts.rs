@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use recall_store::markdown::clock;
-use recall_store::{ActionItem, Chapter, Priority, Segment, Side, Speakers, Summary};
+use recall_store::{ActionItem, Chapter, Priority, Segment, Side, Speakers, Summary, SummaryText};
 use serde::Deserialize;
 
 /// How much of the raw model output a parse error quotes.
@@ -47,6 +47,27 @@ pub fn summary_prompt(lang: &str) -> String {
          \n\
          Write all prose in {language}.\n\
          Keep English technical terms, product names and people's names exactly as spoken.\n\
+         {rules}"
+    )
+}
+
+/// System prompt asking for a summary's texts, sent as a [`SummaryText`]
+/// JSON object written in `from`, translated into `to`, in the shape
+/// [`parse_summary_text`] reads.
+pub fn translate_prompt(from: &str, to: &str) -> String {
+    let (from, to_name) = (language(from), language(to));
+    let rules = language_rules(to);
+    format!(
+        "You translate meeting summaries. The user message is one JSON object written in {from}, \
+         with the keys \"one_line\" and \"body\" (strings) and \"decisions\", \"actions\" and \
+         \"chapters\" (arrays of strings).\n\
+         \n\
+         Answer only with a single JSON object, no prose and no code fence, with the same keys, \
+         every string translated into {to_name}. Each array must have exactly as many items as \
+         the one sent, in the same order: item n of your array translates item n of the sent \
+         one. Never add, drop, merge, split or reorder items, and add no explanation.\n\
+         Keep people's names, ticket ids (such as BB-412), product and project names, code, \
+         file names and technical terms exactly as written.\n\
          {rules}"
     )
 }
@@ -152,21 +173,56 @@ impl From<ActionDto> for ActionItem {
 /// Reads the summary JSON out of model output, tolerating a code fence and
 /// prose around the object. Errors quote the start of `raw`.
 pub fn parse_summary(raw: &str) -> Result<Summary> {
-    let quoted = || raw.chars().take(RAW_IN_ERROR_CHARS).collect::<String>();
-    let text = strip_fence(raw);
-    let json = match (text.find('{'), text.rfind('}')) {
-        (Some(start), Some(end)) if start < end => &text[start..=end],
-        _ => return Err(anyhow!("no JSON object in model output: {}", quoted())),
-    };
-    let dto: SummaryDto = serde_json::from_str(json)
-        .with_context(|| format!("model output is not a summary: {}", quoted()))?;
+    let dto: SummaryDto = serde_json::from_str(json_object(raw)?)
+        .with_context(|| format!("model output is not a summary: {}", quoted(raw)))?;
     Ok(Summary {
         one_line: dto.one_line,
         body: dto.body,
         decisions: dto.decisions,
         actions: dto.actions.into_iter().map(ActionItem::from).collect(),
         chapters: dto.chapters,
+        ..Summary::default()
     })
+}
+
+/// Reads a translated [`SummaryText`] out of model output, as
+/// [`parse_summary`] does a summary. Absent arrays read as empty, which
+/// [`SummaryText::fits`] then rejects unless the summary has none either.
+pub fn parse_summary_text(raw: &str) -> Result<SummaryText> {
+    #[derive(Deserialize)]
+    struct Dto {
+        one_line: String,
+        body: String,
+        #[serde(default)]
+        decisions: Vec<String>,
+        #[serde(default)]
+        actions: Vec<String>,
+        #[serde(default)]
+        chapters: Vec<String>,
+    }
+    let dto: Dto = serde_json::from_str(json_object(raw)?)
+        .with_context(|| format!("model output is not a translation: {}", quoted(raw)))?;
+    Ok(SummaryText {
+        one_line: dto.one_line,
+        body: dto.body,
+        decisions: dto.decisions,
+        actions: dto.actions,
+        chapters: dto.chapters,
+    })
+}
+
+/// The outermost `{...}` in model output, after any code fence.
+fn json_object(raw: &str) -> Result<&str> {
+    let text = strip_fence(raw);
+    match (text.find('{'), text.rfind('}')) {
+        (Some(start), Some(end)) if start < end => Ok(&text[start..=end]),
+        _ => Err(anyhow!("no JSON object in model output: {}", quoted(raw))),
+    }
+}
+
+/// The start of `raw`, for an error message.
+fn quoted(raw: &str) -> String {
+    raw.chars().take(RAW_IN_ERROR_CHARS).collect()
 }
 
 /// Removes a leading ```` ```json ```` or ```` ``` ```` line and a trailing
@@ -310,6 +366,28 @@ mod tests {
         let en = summary_prompt("en");
         assert!(en.contains("English"));
         assert!(!en.contains("Traditional Chinese"));
+    }
+
+    #[test]
+    fn translate_prompt_names_both_languages_and_keeps_terms() {
+        let zh = translate_prompt("en", "zh-TW");
+        assert!(zh.contains("written in English"));
+        assert!(zh.contains("into Traditional Chinese (Taiwan)"));
+        assert!(zh.contains("Simplified"));
+        assert!(zh.contains("ticket ids"));
+        assert!(zh.contains("exactly as many items"));
+    }
+
+    #[test]
+    fn parse_summary_text_reads_fenced_json() {
+        let raw =
+            "```json\n{\"one_line\":\"週會。\",\"body\":\"b\",\"actions\":[\"寫 BB-412\"]}\n```";
+        let text = parse_summary_text(raw).unwrap();
+        assert_eq!(text.one_line, "週會。");
+        assert_eq!(text.actions, ["寫 BB-412"]);
+        assert!(text.decisions.is_empty());
+        let err = parse_summary_text("{\"one_line\":1}").unwrap_err();
+        assert!(format!("{err:#}").contains("not a translation"), "{err:#}");
     }
 
     #[test]

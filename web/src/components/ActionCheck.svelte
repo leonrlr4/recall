@@ -2,7 +2,7 @@
   import type { Snippet } from 'svelte';
   import { dateKey } from '../lib/format';
   import { locale, t } from '../lib/i18n';
-  import { dueLabel, isOverdue } from '../lib/todo';
+  import { dueLabel, isOverdue } from '../lib/due';
   import type { ActionItem } from '../lib/types';
 
   let {

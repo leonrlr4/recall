@@ -21,7 +21,8 @@ pub use claude_code::{
 pub use http::Timeouts;
 pub use ollama::Ollama;
 pub use prompts::{
-    UNKNOWN_REMOTE, ask_prompt, meeting_transcript, parse_summary, summary_prompt, transcript_text,
+    UNKNOWN_REMOTE, ask_prompt, meeting_transcript, parse_summary, parse_summary_text,
+    summary_prompt, transcript_text, translate_prompt,
 };
 
 /// Model used for the Claude backend when the config names none of its own.

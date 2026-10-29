@@ -91,20 +91,42 @@ impl Diarizer for FakeDiarizer {
 
 const SUMMARY: &str = r#"{"one_line":"Said hello.","body":"Both sides said hello.","decisions":[],"actions":[{"text":"Send the deck","owner":"Tom","due":"2026-11-03","priority":"high"}],"chapters":[{"start_ms":0,"title":"Greetings"}]}"#;
 
-/// A fixed summary, or an error when `fail` is set.
+/// A fixed summary, or an error when `fail` is set. Asked to translate, it
+/// returns the texts sent with `ZH ` in front of each, plus one action too
+/// many when `misalign` is set.
 struct FakeLlm {
     calls: Arc<AtomicUsize>,
     fail: bool,
+    misalign: bool,
 }
 
 #[async_trait]
 impl Llm for FakeLlm {
-    async fn complete(&self, _: &str, _: &str) -> Result<String> {
+    async fn complete(&self, system: &str, user: &str) -> Result<String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail {
             bail!("model unreachable");
         }
-        Ok(SUMMARY.into())
+        if !system.starts_with("You translate") {
+            return Ok(SUMMARY.into());
+        }
+        fn mark(v: &mut serde_json::Value) {
+            match v {
+                serde_json::Value::String(s) => *s = format!("ZH {s}"),
+                serde_json::Value::Array(items) => items.iter_mut().for_each(mark),
+                serde_json::Value::Object(map) => map.values_mut().for_each(mark),
+                _ => {}
+            }
+        }
+        let mut text: serde_json::Value = serde_json::from_str(user)?;
+        mark(&mut text);
+        if self.misalign {
+            text["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push("ZH extra".into());
+        }
+        Ok(text.to_string())
     }
 
     async fn stream(&self, system: &str, user: &str, tx: mpsc::Sender<String>) -> Result<()> {
@@ -125,6 +147,7 @@ fn engines(calls: &Calls, llm_fails: bool) -> Engines {
         llm: Arc::new(FakeLlm {
             calls: calls.llm.clone(),
             fail: llm_fails,
+            misalign: false,
         }),
     }
 }
@@ -376,6 +399,93 @@ async fn summary_rerun_keeps_done_marks() {
 }
 
 #[tokio::test]
+async fn summary_is_translated_and_a_rerun_redoes_it_keeping_done_marks() {
+    let mut f = fixture();
+    f.config.summary_lang = "en".into();
+    // The canonical language and a repeat are skipped.
+    f.config.summary_translations = vec!["zh-TW".into(), "en".into(), "zh-TW".into()];
+    let calls = Calls::default();
+    let mut engines = engines(&calls, false);
+    let mut speakers = Speakers::default();
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut speakers,
+        Step::Segment,
+        |_, _, _| {},
+    )
+    .await
+    .unwrap();
+    // One summary call and one translation.
+    assert_eq!(calls.llm.load(Ordering::SeqCst), 2);
+    let mut meeting = Meeting::load(&f.dir.path()).unwrap();
+    assert_eq!(meeting.models["translator"], "fake/llm");
+    let summary = meeting.summary.as_mut().unwrap();
+    assert_eq!(summary.lang.as_deref(), Some("en"));
+    assert_eq!(summary.translations.keys().collect::<Vec<_>>(), ["zh-TW"]);
+    let zh = &summary.translations["zh-TW"];
+    assert_eq!(zh.one_line, "ZH Said hello.");
+    assert_eq!(zh.actions, ["ZH Send the deck"]);
+    assert_eq!(zh.chapters, ["ZH Greetings"]);
+    let at = Utc::now();
+    summary.actions[0].done = true;
+    summary.actions[0].done_at = Some(at);
+    summary.translations.get_mut("zh-TW").unwrap().one_line = "stale".into();
+    meeting.save(&f.dir.path()).unwrap();
+
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut speakers,
+        Step::Summarize,
+        |_, _, _| {},
+    )
+    .await
+    .unwrap();
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    let summary = meeting.summary.as_ref().unwrap();
+    assert_eq!(summary.translations["zh-TW"].one_line, "ZH Said hello.");
+    assert!(summary.actions[0].done);
+    assert_eq!(summary.actions[0].done_at, Some(at));
+    let md = std::fs::read_to_string(f.dir.markdown()).unwrap();
+    assert!(md.contains("- [x] Send the deck "), "{md}");
+    assert!(!md.contains("ZH "), "{md}");
+}
+
+#[tokio::test]
+async fn misaligned_or_failed_translation_leaves_the_summary_done() {
+    let mut f = fixture();
+    f.config.summary_lang = "en".into();
+    f.config.summary_translations = vec!["zh-TW".into()];
+    let calls = Calls::default();
+    let mut engines = engines(&calls, false);
+    engines.llm = Arc::new(FakeLlm {
+        calls: calls.llm.clone(),
+        fail: false,
+        misalign: true,
+    });
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut Speakers::default(),
+        Step::Segment,
+        |_, _, _| {},
+    )
+    .await
+    .unwrap();
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    done_at(&meeting, Step::Summarize);
+    done_at(&meeting, Step::Write);
+    let summary = meeting.summary.as_ref().unwrap();
+    assert_eq!(summary.one_line, "Said hello.");
+    assert!(summary.translations.is_empty());
+    assert!(!meeting.models.contains_key("translator"));
+}
+
+#[tokio::test]
 async fn summary_chunk_size_follows_context_tokens() {
     let mut f = fixture();
     // 50 tokens give a 30-character budget, less than the two lines, so
@@ -445,6 +555,52 @@ async fn synced_meeting_is_summarized_by_claude_code() {
     assert_eq!(calls.llm.load(Ordering::SeqCst), 0);
     assert_eq!(meeting.summary.unwrap().one_line, "TRL6 review.");
     assert_eq!(meeting.models["llm"], "claude-code/claude-opus-5-5");
+}
+
+#[tokio::test]
+async fn claude_code_summary_is_translated_by_the_local_backend() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut f = fixture();
+    let bin = f._tmp.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let script = bin.join("claude");
+    // Saves its arguments, one per line, to check the turn limit.
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' \"$@\" > args\n{CLAUDE_CODE_REPLY}\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.config.claude_code.enabled = true;
+    f.config.claude_code.command = script.to_string_lossy().into_owned();
+    f.config.claude_code.cwd = bin.clone();
+    f.config.summary_lang = "en".into();
+    f.config.summary_translations = vec!["zh-TW".into()];
+    let mut meeting = Meeting::load(&f.dir.path()).unwrap();
+    meeting.sync = true;
+    meeting.save(&f.dir.path()).unwrap();
+
+    let calls = Calls::default();
+    let mut engines = engines(&calls, false);
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut Speakers::default(),
+        Step::Segment,
+        |_, _, _| {},
+    )
+    .await
+    .unwrap();
+    let args = std::fs::read_to_string(bin.join("args")).unwrap();
+    assert!(args.contains("--max-turns\n10\n"), "{args}");
+    assert_eq!(calls.llm.load(Ordering::SeqCst), 1);
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    assert_eq!(meeting.models["llm"], "claude-code/claude-opus-5-5");
+    assert_eq!(meeting.models["translator"], "fake/llm");
+    let summary = meeting.summary.unwrap();
+    assert_eq!(summary.translations["zh-TW"].one_line, "ZH TRL6 review.");
 }
 
 #[tokio::test]

@@ -149,6 +149,10 @@ pub struct Chapter {
     pub title: String,
 }
 
+/// The meeting's summary in `summary_lang`, the canonical language:
+/// `meeting.md`, the vault note, the MCP tools and done marks all use these
+/// fields. The fields after `chapters` are absent in records written before
+/// they existed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
     pub one_line: String,
@@ -156,6 +160,56 @@ pub struct Summary {
     pub decisions: Vec<String>,
     pub actions: Vec<ActionItem>,
     pub chapters: Vec<Chapter>,
+    /// Language tag the summary was written in, e.g. `"en"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    /// The texts in other languages, keyed by language tag, for reading in
+    /// the web UI only. Each fits this summary; see [`SummaryText::fits`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub translations: BTreeMap<String, SummaryText>,
+}
+
+impl Summary {
+    /// The summary's own texts, in the shape of a translation.
+    pub fn text(&self) -> SummaryText {
+        SummaryText {
+            one_line: self.one_line.clone(),
+            body: self.body.clone(),
+            decisions: self.decisions.clone(),
+            actions: self.actions.iter().map(|a| a.text.clone()).collect(),
+            chapters: self.chapters.iter().map(|c| c.title.clone()).collect(),
+        }
+    }
+}
+
+/// A summary's texts in another language. `decisions`, `actions` (the
+/// items' text) and `chapters` (the titles) line up item for item with the
+/// summary's own lists, so done marks, owners, dues and times are kept once,
+/// on the summary.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SummaryText {
+    pub one_line: String,
+    pub body: String,
+    pub decisions: Vec<String>,
+    pub actions: Vec<String>,
+    pub chapters: Vec<String>,
+}
+
+impl SummaryText {
+    /// Why this text does not line up with `summary`, if it does not: a list
+    /// whose length differs.
+    pub fn fits(&self, summary: &Summary) -> Result<(), String> {
+        for (name, ours, theirs) in [
+            ("decisions", self.decisions.len(), summary.decisions.len()),
+            ("actions", self.actions.len(), summary.actions.len()),
+            ("chapters", self.chapters.len(), summary.chapters.len()),
+        ] {
+            if ours != theirs {
+                return Err(format!("{ours} {name} where the summary has {theirs}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The calendar event a meeting was matched to by start time. Attendee
@@ -326,6 +380,17 @@ mod tests {
                     start_ms: 0,
                     title: "Intro".into(),
                 }],
+                lang: Some("en".into()),
+                translations: BTreeMap::from([(
+                    "zh-TW".to_string(),
+                    SummaryText {
+                        one_line: "週會。".into(),
+                        body: "討論了發版。".into(),
+                        decisions: vec!["週五發版".into()],
+                        actions: vec!["寫發版說明".into()],
+                        chapters: vec!["開場".into()],
+                    },
+                )]),
             }),
             models,
             participants_hint: vec!["Tom Lin".into(), "Amy Chen".into()],
@@ -379,6 +444,9 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("named_by");
+        let summary = value["summary"].as_object_mut().unwrap();
+        summary.remove("lang");
+        summary.remove("translations");
         fs::write(dir.path().join(FILE), serde_json::to_vec(&value).unwrap()).unwrap();
 
         let loaded = Meeting::load(dir.path()).unwrap();
@@ -387,6 +455,9 @@ mod tests {
         assert_eq!(loaded.screen_error, None);
         assert_eq!(loaded.calendar, None);
         assert_eq!(loaded.clusters[0].named_by, None);
+        let summary = loaded.summary.as_ref().unwrap();
+        assert_eq!(summary.lang, None);
+        assert!(summary.translations.is_empty());
 
         loaded.save(dir.path()).unwrap();
         let saved: serde_json::Value =
@@ -395,6 +466,27 @@ mod tests {
         assert!(saved.get("screen_error").is_none());
         assert!(saved.get("calendar").is_none());
         assert!(saved["clusters"][0].get("named_by").is_none());
+        assert!(saved["summary"].get("lang").is_none());
+        assert!(saved["summary"].get("translations").is_none());
+    }
+
+    #[test]
+    fn summary_text_fits_only_lists_of_the_same_lengths() {
+        let summary = sample().summary.unwrap();
+        let text = &summary.translations["zh-TW"];
+        assert_eq!(text.fits(&summary), Ok(()));
+        assert_eq!(summary.text().fits(&summary), Ok(()));
+        assert_eq!(summary.text().actions, ["Write release notes"]);
+
+        let mut short = text.clone();
+        short.actions.clear();
+        assert_eq!(
+            short.fits(&summary),
+            Err("0 actions where the summary has 1".into())
+        );
+        let mut long = text.clone();
+        long.chapters.push("多".into());
+        assert!(long.fits(&summary).is_err());
     }
 
     #[test]

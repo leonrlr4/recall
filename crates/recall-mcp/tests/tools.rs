@@ -15,7 +15,7 @@ use recall_server::{
 use recall_store::markdown::clock;
 use recall_store::{
     ActionItem, Config, Index, Meeting, MeetingDir, MeetingId, Priority, Segment, Side, SpeakerId,
-    Speakers, Step, StepState, Summary,
+    Speakers, Step, StepState, Summary, SummaryText,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -175,6 +175,18 @@ async fn harness() -> Harness {
             },
         ],
         chapters: Vec::new(),
+        lang: Some("en".into()),
+        // Shown in the web UI only; no tool may pass it on.
+        translations: BTreeMap::from([(
+            "zh-TW".to_string(),
+            SummaryText {
+                one_line: "發版規劃。".into(),
+                body: "我們決定了發版日期。".into(),
+                decisions: vec!["週五發版".into()],
+                actions: vec!["發版".into(), "寫筆記".into()],
+                chapters: Vec::new(),
+            },
+        )]),
     };
     let weekly_segments = vec![
         segment(0, 2_000, Side::Me, None, "Morning everyone."),
@@ -487,6 +499,9 @@ async fn every_tool_round_trips() {
         "Alice (speaker id",
     ] {
         assert!(notes.contains(want), "{want:?} missing from {notes}");
+    }
+    for translated in ["發版", "週五"] {
+        assert!(!notes.contains(translated), "{translated:?} in {notes}");
     }
 
     let missing = call(&h.client, "get_meeting", json!({ "id": "nope" })).await;

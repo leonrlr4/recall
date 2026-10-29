@@ -136,7 +136,9 @@ The recording goes through six steps, one meeting at a time:
 3. `diarize`: pyannote segmentation and CAM++ voice embeddings split the call
    side into speakers.
 4. `name`: speakers are matched against the voices recall has seen before.
-5. `summarize`: the LLM writes a summary, decisions, action items and chapters.
+5. `summarize`: the LLM writes a summary, decisions, action items and chapters
+   in `summary_lang`, then the `llm` backend translates them into each of
+   `summary_translations` (see below).
 6. `write`: `meeting.md` is written and the search index updated.
 
 A failed step keeps the audio; rerun it from the web page or with
@@ -148,10 +150,9 @@ Each action item has an owner, a due date, a priority and the moment in the
 meeting it came from. The summary prompt carries the meeting's date, and
 recall also resolves common relative dates itself (`明天`, `下週三`,
 `next Friday`, `11/3`), so due dates are `YYYY-MM-DD` where they can be;
-anything vaguer ("next sprint") keeps its wording. The To-do page lists the
-items of every meeting, your open ones first by due date and priority, with
-a checkbox to mark them done and a link to the moment in the recording.
-Rerunning `summarize` keeps your done marks: each one moves to the new item
+anything vaguer ("next sprint") keeps its wording. The meeting page lists its
+items with a checkbox to mark them done and a link to the moment in the
+recording. Rerunning `summarize` keeps your done marks: each one moves to the new item
 with the most similar text, or stays as it was if none is close.
 
 In `meeting.md` the items are [Obsidian Tasks](https://publish.obsidian.md/tasks/)
@@ -204,6 +205,7 @@ allowlist = ["brave", "chromium", "chrome", "firefox", "zoom", "slack", "discord
 debounce_secs = 8                      # mic must stay open this long to record
 end_grace_secs = 30                    # mic closed this long ends the recording
 summary_lang = "zh-TW"                 # "zh-TW" or "en"
+summary_translations = []              # e.g. ["en"]: extra languages for the web UI only
 # ui_lang = "en"                       # unset: follow the browser; a choice made in the UI wins
 port = 7474
 
@@ -299,12 +301,25 @@ transcript longer than `context_tokens * 0.6` characters is summarized in parts
 that are then merged, and a question about such a meeting is refused with
 "this meeting is too long for the current context; raise llm.context_tokens".
 
+### Summary translations
+
+`summary_lang` is the summary's canonical language: `meeting.md`, the vault
+note, the MCP tools and the questions use it alone. Each language in
+`summary_translations` gets a translation of the summary's texts, made by the
+`llm` backend right after the summary (also for summaries Claude Code wrote,
+since only the summary is sent, not the transcript). Translations are kept in
+`meeting.json` for the meeting page, whose language switch over the summary
+shows one; done marks, owners, dues and times are shared with the canonical
+items. A translation that fails, or whose lists do not line up item for item
+with the summary's, is left out and logged. Rerunning `summarize` redoes them.
+
 ### Claude Code for synced meetings
 
 With `[claude_code] enabled = true`, a meeting marked for sync is summarized by
 Claude Code in print mode instead of the `llm` backend. It runs in `cwd`, so it
-reads the CLAUDE.md files and Claude Code memory there and may look up project
-notes and repositories under it to get names, tickets and context right. The
+reads the CLAUDE.md files and Claude Code memory there and may look up a few
+names, tickets or terms the transcript leaves unclear in the project notes and
+repositories under it, within 10 turns. The
 "ask this meeting" box of a synced meeting goes to Claude Code the same way.
 Every other meeting keeps the `llm` backend. Install
 Claude Code and log in (`claude`, then `/login`) as the user the daemon runs
@@ -313,7 +328,7 @@ as. Each summary runs:
 ```sh
 claude -p --output-format json --no-session-persistence \
   --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk \
-  --strict-mcp-config --disable-slash-commands [--model <model>] \
+  --strict-mcp-config --disable-slash-commands [--model <model>] --max-turns 10 \
   --append-system-prompt <summary instructions>
 ```
 
@@ -509,7 +524,7 @@ page runs it that way.
 - With the `ollama` backend nothing leaves the machine unless you point
   `endpoint` at another host. With the `claude` backend, the transcript text
   with speaker names is sent to the Anthropic API for each summary and each
-  question asked about a meeting.
+  question asked about a meeting, and the summary for each translation.
 - With `[claude_code]` enabled, the transcript of every meeting marked for sync,
   with speaker names, goes to Anthropic through Claude Code, together with
   whatever files under `cwd` it reads while summarizing. A question on the Ask

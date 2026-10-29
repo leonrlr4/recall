@@ -41,17 +41,6 @@ export interface ActionItem {
   done_at: string | null;
 }
 
-/** `GET /api/action-items`: one item with the meeting it came from. */
-export interface ActionRow extends ActionItem {
-  meeting: string;
-  title: string;
-  started: string;
-  /** Position in the meeting's `summary.actions`, for the toggle. */
-  index: number;
-  /** The owner is the user. */
-  mine: boolean;
-}
-
 export interface Chapter {
   start_ms: number;
   title: string;
@@ -63,6 +52,20 @@ export interface Summary {
   decisions: string[];
   actions: ActionItem[];
   chapters: Chapter[];
+  /** Language tag the summary was written in; absent in older records. */
+  lang?: string;
+  /** The texts in other languages, by language tag; absent when none. */
+  translations?: Record<string, SummaryText>;
+}
+
+/** A summary's texts in another language. Each list lines up item for item
+ *  with the summary's own decisions, actions and chapters. */
+export interface SummaryText {
+  one_line: string;
+  body: string;
+  decisions: string[];
+  actions: string[];
+  chapters: string[];
 }
 
 export interface Meeting {

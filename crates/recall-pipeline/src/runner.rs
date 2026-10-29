@@ -23,6 +23,7 @@ use crate::models::{self, ModelId};
 use crate::naming::{apply_names, assign_clusters, name_clusters, name_from_meet};
 use crate::summarize::{carry_done, summarize};
 use crate::transcribe::{Track, Transcriber, Utterance, WhisperTranscriber};
+use crate::translate::translate_all;
 use crate::vad::{Region, SileroVad, Vad, drop_echo, merge_close};
 
 /// Whisper language code for transcription.
@@ -34,6 +35,16 @@ const ECHO_TOLERANCE_MS: u32 = 150;
 const MERGE_GAP_MS: u32 = 300;
 /// Longest region handed to the transcriber.
 const MAX_REGION_MS: u32 = 30_000;
+/// Most turns a Claude Code summary may take. A turn is one model reply:
+/// the final answer is one, and each round of file lookups another. The
+/// note asks for at most five lookups, which a run makes in one to five
+/// rounds, so a normal meeting needs two to six turns; 10 leaves room for a
+/// model that splits its lookups further. A run that reaches the limit ends
+/// without an answer (`error_max_turns`) and the meeting is summarized by
+/// the configured backend instead, so the limit bounds a run that keeps
+/// exploring the work directory (one took 5 min 40 s for a 2-minute call)
+/// rather than shaping a normal one.
+const CLAUDE_CODE_MAX_TURNS: u32 = 10;
 /// Cosine similarity a cluster needs to be named after a known person.
 const NAME_THRESHOLD: f32 = 0.6;
 /// Most voice embeddings kept per person when a cluster named through Meet
@@ -316,13 +327,20 @@ impl Run<'_> {
     /// `claude_code` is enabled, so the summary can draw on the user's work
     /// notes; otherwise, or when that run fails for any reason, with the
     /// configured backend. `models["llm"]` names whichever wrote it. A
-    /// rerun keeps the user's done marks; see [`carry_done`].
+    /// rerun keeps the user's done marks; see [`carry_done`]. The summary is
+    /// then translated; see [`Run::translate`].
     async fn summarize(&mut self) -> Result<()> {
+        self.write_summary().await?;
+        self.translate().await;
+        Ok(())
+    }
+
+    async fn write_summary(&mut self) -> Result<()> {
         let terms = self.glossary().terms().to_vec();
         let date = self.meeting.started.with_timezone(&Local).date_naive();
         let cc = &self.config.claude_code;
         if self.meeting.sync && cc.enabled {
-            let claude = ClaudeCode::from_config(cc);
+            let claude = ClaudeCode::from_config(cc).with_max_turns(CLAUDE_CODE_MAX_TURNS);
             let result = summarize(
                 &claude,
                 &self.meeting.segments,
@@ -367,7 +385,41 @@ impl Run<'_> {
         if let Some(old) = &self.meeting.summary {
             carry_done(&old.actions, &mut summary);
         }
+        summary.lang = Some(self.config.summary_lang.clone());
         self.meeting.summary = Some(summary);
+    }
+
+    /// Translates the summary into each of `summary_translations`, after
+    /// [`carry_done`] so the translation lines up with the final items.
+    /// The configured backend translates (Ollama by default), even when
+    /// Claude Code wrote the summary: the model gets only the summary, the
+    /// local one keeps it on this machine (about 30 s for a 2-minute call
+    /// on qwen3.6:35b-a3b). A failed translation is logged and leaves that
+    /// language out; it never fails the step. `models["translator"]` names
+    /// the model when any translation was made.
+    async fn translate(&mut self) {
+        let Some(summary) = self.meeting.summary.as_mut() else {
+            return;
+        };
+        let llm = &self.engines.llm;
+        let failed = translate_all(
+            llm.as_ref(),
+            summary,
+            &self.config.summary_lang,
+            &self.config.summary_translations,
+        )
+        .await;
+        for (lang, err) in failed {
+            eprintln!(
+                "recall: no {lang} translation of the summary of {}: {err:#}",
+                self.meeting.id.0
+            );
+        }
+        if summary.translations.is_empty() {
+            self.meeting.models.remove("translator");
+        } else {
+            self.meeting.models.insert("translator".into(), llm.name());
+        }
     }
 
     /// Writes `meeting.md` (through a temporary file and a rename) and

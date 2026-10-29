@@ -19,7 +19,7 @@ use recall_server::{
 };
 use recall_store::{
     ActionItem, Config, Event, Index, MeetBatch, Meeting, MeetingDir, MeetingId, Segment, Side,
-    SpeakerId, Speakers, Step, StepState, Summary, markdown,
+    SpeakerId, Speakers, Step, StepState, Summary, SummaryText, markdown,
 };
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
@@ -1173,11 +1173,8 @@ fn set_actions(h: &Harness, id: &str, actions: Vec<ActionItem>) {
     let path = h.meeting_path(id);
     let mut meeting = Meeting::load(&path).unwrap();
     meeting.summary = Some(Summary {
-        one_line: String::new(),
-        body: String::new(),
-        decisions: Vec::new(),
         actions,
-        chapters: Vec::new(),
+        ..Summary::default()
     });
     meeting.save(&path).unwrap();
 }
@@ -1189,6 +1186,64 @@ fn action(text: &str, owner: Option<&str>, due: Option<&str>) -> ActionItem {
         due: due.map(Into::into),
         ..ActionItem::default()
     }
+}
+
+#[tokio::test]
+async fn done_marks_ignore_translations_and_markdown_stays_canonical() {
+    let h = harness().await;
+    let path = h.meeting_path(WEEKLY);
+    let mut meeting = Meeting::load(&path).unwrap();
+    meeting.summary = Some(Summary {
+        one_line: "Weekly sync.".into(),
+        actions: vec![action("Write release notes", Some("me"), None)],
+        lang: Some("en".into()),
+        translations: BTreeMap::from([(
+            "zh-TW".to_string(),
+            SummaryText {
+                one_line: "週會。".into(),
+                actions: vec!["寫發版說明".into()],
+                ..SummaryText::default()
+            },
+        )]),
+        ..Summary::default()
+    });
+    meeting.save(&path).unwrap();
+    let client = reqwest::Client::new();
+    let url = h.url(&format!("/api/meetings/{}/actions/0", encode(WEEKLY)));
+
+    // The item is identified by its canonical text, never a translation.
+    let res = client
+        .patch(&url)
+        .json(&json!({ "done": true, "text": "寫發版說明" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let res = client
+        .patch(&url)
+        .json(&json!({ "done": true, "text": "Write release notes" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let saved = Meeting::load(&path).unwrap();
+    let summary = saved.summary.unwrap();
+    assert!(summary.actions[0].done);
+    assert_eq!(summary.translations["zh-TW"].actions, ["寫發版說明"]);
+    let md = fs::read_to_string(path.join("meeting.md")).unwrap();
+    assert!(md.contains("- [x] Write release notes 👤 me ✅ "), "{md}");
+    assert!(!md.contains("寫發版說明") && !md.contains("週會"), "{md}");
+    let detail: Value = reqwest::get(h.url(&format!("/api/meetings/{}", encode(WEEKLY))))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        detail["meeting"]["summary"]["translations"]["zh-TW"]["one_line"],
+        "週會。"
+    );
 }
 
 #[tokio::test]

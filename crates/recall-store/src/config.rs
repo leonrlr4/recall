@@ -19,7 +19,13 @@ pub struct Config {
     pub debounce_secs: u64,
     pub end_grace_secs: u64,
     pub llm: LlmConfig,
+    /// Language of the summary that `meeting.md`, the vault note and the MCP
+    /// tools carry.
     pub summary_lang: String,
+    /// More languages to translate each summary into, for reading in the
+    /// web UI only, e.g. `["zh-TW"]`. The translations stay in
+    /// `meeting.json`; nothing published carries them.
+    pub summary_translations: Vec<String>,
     /// UI language, if set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_lang: Option<String>,
@@ -144,6 +150,7 @@ impl Default for Config {
             end_grace_secs: 30,
             llm: LlmConfig::default(),
             summary_lang: "zh-TW".into(),
+            summary_translations: Vec::new(),
             ui_lang: None,
             stt: SttConfig::default(),
             port: 7474,
@@ -388,6 +395,7 @@ mod tests {
         assert_eq!(config.llm.context_tokens, 32_768);
         assert_eq!(config.llm.transcript_budget_chars(), 19_660);
         assert_eq!(config.summary_lang, "zh-TW");
+        assert!(config.summary_translations.is_empty());
         assert_eq!(config.ui_lang, None);
         assert_eq!(config.stt.engine, "breeze");
         assert_eq!(config.stt.threads, 8);
@@ -436,9 +444,16 @@ mod tests {
     fn config_parses_partial_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[llm]\nbackend = \"claude\"\n").unwrap();
+        std::fs::write(
+            &path,
+            "summary_translations = [\"zh-TW\"]\n[llm]\nbackend = \"claude\"\n",
+        )
+        .unwrap();
         let config = Config::load_from(&path).unwrap();
-        let mut expected = Config::default();
+        let mut expected = Config {
+            summary_translations: vec!["zh-TW".into()],
+            ..Config::default()
+        };
         expected.llm.backend = "claude".into();
         assert_eq!(config, expected);
     }

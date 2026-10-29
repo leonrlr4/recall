@@ -10,7 +10,6 @@
   import Meeting from './routes/Meeting.svelte';
   import People from './routes/People.svelte';
   import Settings from './routes/Settings.svelte';
-  import Todo from './routes/Todo.svelte';
 
   let route = $state<Route>(current());
 
@@ -28,8 +27,6 @@
         ? t('nav.people')
         : route.name === 'settings'
           ? t('nav.settings')
-          : route.name === 'todo'
-            ? t('nav.todo')
           : route.name === 'ask'
             ? t('nav.ask')
             : null;
@@ -47,7 +44,6 @@
       <a href="/" onclick={link} class:active={route.name === 'list' || route.name === 'meeting'}>
         {t('nav.meetings')}
       </a>
-      <a href="/todo" onclick={link} class:active={route.name === 'todo'}>{t('nav.todo')}</a>
       <a href="/ask" onclick={link} class:active={route.name === 'ask'}>{t('nav.ask')}</a>
       <a href="/people" onclick={link} class:active={route.name === 'people'}>{t('nav.people')}</a>
       <a href="/settings" onclick={link} class:active={route.name === 'settings'}>
@@ -65,8 +61,6 @@
     {#key route.id}
       <Meeting id={route.id} startMs={route.t} />
     {/key}
-  {:else if route.name === 'todo'}
-    <Todo />
   {:else if route.name === 'ask'}
     <AskAll />
   {:else if route.name === 'people'}

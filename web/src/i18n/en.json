@@ -2,7 +2,6 @@
   "nav": {
     "label": "Main",
     "meetings": "Meetings",
-    "todo": "To-do",
     "ask": "Ask",
     "people": "People",
     "settings": "Settings"
@@ -106,25 +105,6 @@
     "attendees": "Attendees: {names}",
     "delete_confirm_vault": "Delete “{title}” with its audio and transcript? Its note is also removed from the team vault, but stays in the vault's git history. This cannot be undone."
   },
-  "todo": {
-    "title": "To-do",
-    "intro": "Action items from every meeting summary. Checking one off also updates its meeting note.",
-    "filters": "Filters",
-    "owner": "Owner",
-    "owner_me": "Me",
-    "owner_all": "Everyone",
-    "status": "Show",
-    "status_open": "Open",
-    "status_done": "Done",
-    "status_all": "All",
-    "meeting": "Meeting",
-    "meeting_all": "All meetings",
-    "count": "{n} items",
-    "count_one": "1 item",
-    "none_yet": "No action items yet. They appear here when a meeting summary lists follow-up tasks.",
-    "no_results": "No action items match these filters.",
-    "load_failed": "Could not load action items: {error}"
-  },
   "action": {
     "high": "High",
     "medium": "Medium",
@@ -142,7 +122,9 @@
     "actions": "Action items",
     "chapters": "Chapters",
     "pending": "The summary appears when processing finishes.",
-    "none": "No summary for this meeting."
+    "none": "No summary for this meeting.",
+    "language": "Summary language",
+    "untranslated": "No {lang} version of this summary yet; showing it as written."
   },
   "transcript": {
     "title": "Transcript",

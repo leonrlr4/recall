@@ -17,6 +17,6 @@ pub use index::{Hit, Index, Job, ListFilter, MeetingRow, RebuildReport, state_of
 pub use meet::{MeetBatch, MeetEvent, MeetEventKind, append_events, read_events};
 pub use meeting::{
     ActionItem, Attendee, CalendarEvent, Chapter, Cluster, Meeting, MeetingId, NamedBy, Priority,
-    Segment, Side, SpeakerId, Step, StepState, Summary,
+    Segment, Side, SpeakerId, Step, StepState, Summary, SummaryText,
 };
 pub use speakers::{Person, Speakers, cosine};

@@ -316,6 +316,7 @@ mod tests {
                     start_ms: 92_000,
                     title: "Export".into(),
                 }],
+                ..Summary::default()
             }),
             models: BTreeMap::new(),
             participants_hint: Vec::new(),
@@ -416,6 +417,17 @@ tags: []
         }
         assert!(md.contains("[01:36] **Them** 嗯"));
         assert!(!md.contains("## 摘要"));
+
+        // Translations are for the web UI; the note, which the vault sync
+        // publishes, is the canonical summary alone.
+        let mut translated = meeting.clone();
+        let summary = translated.summary.as_mut().unwrap();
+        let mut text = summary.text();
+        text.one_line = "TRANSLATED one line".into();
+        text.actions[0] = "TRANSLATED action".into();
+        text.chapters[0] = "TRANSLATED chapter".into();
+        summary.translations.insert("ja".into(), text);
+        assert_eq!(render(&translated, &speakers, "en"), md);
 
         let (mut multi, _) = sample();
         let summary = multi.summary.as_mut().unwrap();

@@ -2,10 +2,12 @@
   import ActionCheck from './ActionCheck.svelte';
   import { clock } from '../lib/format';
   import { t } from '../lib/i18n';
+  import { langLabel, summaryLangs, viewSummary } from '../lib/summaryLang';
+  import { chooseSummaryLang, wantedSummaryLang } from '../lib/summaryLang.svelte';
   import type { Summary } from '../lib/types';
 
   let {
-    summary,
+    summary: original,
     pending,
     currentMs,
     onseek,
@@ -19,6 +21,12 @@
     /** Checks off or reopens `summary.actions[index]`. */
     ontoggle: (index: number, done: boolean) => void;
   } = $props();
+
+  const wanted = $derived(wantedSummaryLang());
+  const langs = $derived(original ? summaryLangs(original, wanted) : []);
+  // The texts in the chosen language; done marks stay the original items'.
+  const view = $derived(original ? viewSummary(original, wanted) : null);
+  const summary = $derived(view?.summary ?? null);
 
   // Chapter containing the playhead.
   const activeChapter = $derived.by(() => {
@@ -38,7 +46,23 @@
 {:else}
   <div class="stack">
     <section class="panel pad">
-      <h2 class="panel-title">{t('summary.title')}</h2>
+      <div class="head">
+        <h2 class="panel-title">{t('summary.title')}</h2>
+        {#if langs.length}
+          <div class="langs" role="group" aria-label={t('summary.language')}>
+            {#each langs as l (l)}
+              <button
+                class:on={l === wanted}
+                aria-pressed={l === wanted}
+                onclick={() => chooseSummaryLang(l)}>{langLabel(l)}</button
+              >
+            {/each}
+          </div>
+        {/if}
+      </div>
+      {#if view?.missing}
+        <p class="muted note">{t('summary.untranslated', { lang: langLabel(wanted) })}</p>
+      {/if}
       {#if summary.one_line}
         <p class="lead">{summary.one_line}</p>
       {/if}
@@ -118,6 +142,41 @@
 
   .none {
     margin: 0;
+  }
+
+  .head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .langs {
+    display: flex;
+    gap: 2px;
+    font-size: 12px;
+  }
+
+  .langs button {
+    padding: 1px 6px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-3);
+  }
+
+  .langs button:hover {
+    background: var(--hover);
+  }
+
+  .langs button.on {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+
+  .note {
+    margin: 0 0 8px;
+    font-size: 12px;
   }
 
   .lead {

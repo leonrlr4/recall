@@ -801,9 +801,7 @@ mod tests {
         zoom.summary = Some(Summary {
             one_line: "Budget.".into(),
             body: String::new(),
-            decisions: vec![],
-            actions: vec![],
-            chapters: vec![],
+            ..Summary::default()
         });
         let mut meet = meeting("2026-10-27 11:00 b", Some("Google Meet"), &["roadmap"]);
         meet.started = Utc.with_ymd_and_hms(2026, 10, 27, 3, 0, 0).unwrap();
