@@ -26,10 +26,30 @@ export interface Cluster {
   named_by?: 'voiceprint' | 'meet' | 'user';
 }
 
+export type Priority = 'high' | 'medium' | 'low';
+
 export interface ActionItem {
   text: string;
   owner: string | null;
+  /** `YYYY-MM-DD` when the meeting gave a computable date, otherwise the
+   *  words used. */
   due: string | null;
+  priority: Priority | null;
+  /** Milliseconds into the meeting where the item came up. */
+  source_ms: number | null;
+  done: boolean;
+  done_at: string | null;
+}
+
+/** `GET /api/action-items`: one item with the meeting it came from. */
+export interface ActionRow extends ActionItem {
+  meeting: string;
+  title: string;
+  started: string;
+  /** Position in the meeting's `summary.actions`, for the toggle. */
+  index: number;
+  /** The owner is the user. */
+  mine: boolean;
 }
 
 export interface Chapter {

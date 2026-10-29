@@ -9,6 +9,7 @@
   import Meeting from './routes/Meeting.svelte';
   import People from './routes/People.svelte';
   import Settings from './routes/Settings.svelte';
+  import Todo from './routes/Todo.svelte';
 
   let route = $state<Route>(current());
 
@@ -26,7 +27,9 @@
         ? t('nav.people')
         : route.name === 'settings'
           ? t('nav.settings')
-          : null;
+          : route.name === 'todo'
+            ? t('nav.todo')
+            : null;
     if (route.name !== 'meeting') document.title = title ? `${title} · recall` : 'recall';
   });
 </script>
@@ -41,6 +44,7 @@
       <a href="/" onclick={link} class:active={route.name === 'list' || route.name === 'meeting'}>
         {t('nav.meetings')}
       </a>
+      <a href="/todo" onclick={link} class:active={route.name === 'todo'}>{t('nav.todo')}</a>
       <a href="/people" onclick={link} class:active={route.name === 'people'}>{t('nav.people')}</a>
       <a href="/settings" onclick={link} class:active={route.name === 'settings'}>
         {t('nav.settings')}
@@ -57,6 +61,8 @@
     {#key route.id}
       <Meeting id={route.id} startMs={route.t} />
     {/key}
+  {:else if route.name === 'todo'}
+    <Todo />
   {:else if route.name === 'people'}
     <People />
   {:else if route.name === 'settings'}

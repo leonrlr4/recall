@@ -1,4 +1,6 @@
 import type {
+  ActionItem,
+  ActionRow,
   Config,
   ConfigPatch,
   Hit,
@@ -102,6 +104,23 @@ export function deleteMeeting(id: string): Promise<void> {
 
 export function rerun(id: string, step: Step): Promise<{ job: number }> {
   return request(`${meetingUrl(id)}/rerun/${step}`, { method: 'POST' });
+}
+
+/** Every meeting's action items, newest meeting first. */
+export function actionItems(): Promise<ActionRow[]> {
+  return request(`${BASE}/action-items`);
+}
+
+/**
+ * Checks an action item off or reopens it. `text` is the item as last
+ * seen; the server answers 409 when a rerun has replaced the items since.
+ */
+export function patchAction(
+  id: string,
+  index: number,
+  body: { done: boolean; text?: string },
+): Promise<ActionItem> {
+  return request(`${meetingUrl(id)}/actions/${index}`, json('PATCH', body));
 }
 
 export function people(): Promise<Person[]> {

@@ -122,7 +122,7 @@ pub(crate) fn open_dir(config: &Config, id: &str) -> ApiResult<MeetingDir> {
 /// 409 while the meeting has a pending or running job: the job saves
 /// `meeting.json` after every step and would overwrite an edit, or recreate
 /// a deleted directory's files.
-fn ensure_idle(index: &Index, id: &MeetingId) -> ApiResult<()> {
+pub(crate) fn ensure_idle(index: &Index, id: &MeetingId) -> ApiResult<()> {
     match index.active_job(id)? {
         Some(_) => Err(ApiError::conflict("meeting is being processed")),
         None => Ok(()),

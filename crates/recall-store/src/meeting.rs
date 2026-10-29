@@ -98,11 +98,49 @@ pub enum NamedBy {
     User,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// A follow-up task from the summary. The fields after `due` are absent in
+/// records written before they existed and load as their defaults.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ActionItem {
     pub text: String,
     pub owner: Option<String>,
+    /// `YYYY-MM-DD` when the meeting's date makes it computable, otherwise
+    /// the wording used in the meeting (e.g. `"next sprint"`).
     pub due: Option<String>,
+    #[serde(default)]
+    pub priority: Option<Priority>,
+    /// Milliseconds into the meeting where the task came up.
+    #[serde(default)]
+    pub source_ms: Option<u32>,
+    /// Checked off by the user; the summary step never sets it.
+    #[serde(default)]
+    pub done: bool,
+    #[serde(default)]
+    pub done_at: Option<DateTime<Utc>>,
+}
+
+/// An action item's priority. Declaration order is urgency order, which
+/// sorting relies on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    High,
+    Medium,
+    Low,
+}
+
+impl Priority {
+    /// Reads a priority word case-insensitively; anything else is `None`, so
+    /// a model writing `"urgent"` or `""` costs the priority, not the
+    /// summary.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "low" => Some(Self::Low),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -232,7 +270,11 @@ mod tests {
                 actions: vec![ActionItem {
                     text: "Write release notes".into(),
                     owner: Some("Leon".into()),
-                    due: None,
+                    due: Some("2026-10-30".into()),
+                    priority: Some(Priority::High),
+                    source_ms: Some(2_500),
+                    done: true,
+                    done_at: Some(at),
                 }],
                 chapters: vec![Chapter {
                     start_ms: 0,
@@ -283,6 +325,41 @@ mod tests {
         assert!(saved.get("screen_offset_ms").is_none());
         assert!(saved.get("screen_error").is_none());
         assert!(saved["clusters"][0].get("named_by").is_none());
+    }
+
+    #[test]
+    fn old_action_items_load_open_without_priority() {
+        let json = r#"{"text":"Write notes","owner":"Leon","due":"Friday"}"#;
+        let item: ActionItem = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            item,
+            ActionItem {
+                text: "Write notes".into(),
+                owner: Some("Leon".into()),
+                due: Some("Friday".into()),
+                ..ActionItem::default()
+            }
+        );
+    }
+
+    #[test]
+    fn action_item_json_has_new_fields() {
+        let value = serde_json::to_value(sample()).unwrap();
+        let action = &value["summary"]["actions"][0];
+        assert_eq!(action["priority"], "high");
+        assert_eq!(action["source_ms"], 2_500);
+        assert_eq!(action["done"], true);
+        assert_eq!(action["done_at"], "2026-10-27T14:30:00Z");
+    }
+
+    #[test]
+    fn priority_parses_leniently() {
+        assert_eq!(Priority::parse(" HIGH "), Some(Priority::High));
+        assert_eq!(Priority::parse("medium"), Some(Priority::Medium));
+        assert_eq!(Priority::parse("Low"), Some(Priority::Low));
+        assert_eq!(Priority::parse("urgent"), None);
+        assert_eq!(Priority::parse(""), None);
+        assert!(Priority::High < Priority::Low);
     }
 
     #[test]

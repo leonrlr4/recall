@@ -170,6 +170,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/selftest", post(control::selftest))
         .route("/meet/events", post(meet::events))
         .route("/action-items", get(actions::list))
+        .route(
+            "/meetings/{id}/actions/{index}",
+            axum::routing::patch(actions::patch),
+        )
         .route("/config", get(control::get_config).put(control::put_config))
         .route("/events", get(events::stream))
         .fallback(error::not_found);

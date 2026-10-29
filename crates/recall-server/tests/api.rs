@@ -1185,7 +1185,145 @@ fn action(text: &str, owner: Option<&str>, due: Option<&str>) -> ActionItem {
         text: text.into(),
         owner: owner.map(Into::into),
         due: due.map(Into::into),
+        ..ActionItem::default()
     }
+}
+
+#[tokio::test]
+async fn action_item_toggle_saves_renders_and_filters() {
+    let h = harness().await;
+    set_actions(
+        &h,
+        WEEKLY,
+        vec![
+            action("Write release notes", Some("me"), Some("2026-10-30")),
+            action("Book the room", Some("Amy"), None),
+        ],
+    );
+    set_actions(&h, REVIEW, Vec::new());
+    let client = reqwest::Client::new();
+    let url = |i: usize| h.url(&format!("/api/meetings/{}/actions/{i}", encode(WEEKLY)));
+    let list = |query: &str| {
+        let url = h.url(&format!("/api/action-items{query}"));
+        async move {
+            let items: Vec<Value> = reqwest::get(url).await.unwrap().json().await.unwrap();
+            items
+        }
+    };
+
+    let items = list("").await;
+    assert_eq!(items[0]["index"], 0);
+    assert_eq!(items[0]["done"], false);
+    assert_eq!(items[0]["done_at"], Value::Null);
+    assert_eq!(items[0]["mine"], true);
+    assert_eq!(items[1]["index"], 1);
+    assert_eq!(items[1]["mine"], false);
+
+    let res = client
+        .patch(url(0))
+        .json(&json!({ "done": true, "text": "Write release notes" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["done"], true);
+    let done_at = body["done_at"].as_str().unwrap().to_string();
+    let saved = Meeting::load(&h.meeting_path(WEEKLY)).unwrap();
+    assert!(saved.summary.as_ref().unwrap().actions[0].done);
+    let md = fs::read_to_string(h.meeting_path(WEEKLY).join("meeting.md")).unwrap();
+    assert!(
+        md.contains("- [x] Write release notes 👤 me 📅 2026-10-30 ✅ "),
+        "{md}"
+    );
+    assert!(md.contains("- [ ] Book the room 👤 Amy\n"), "{md}");
+    assert!(
+        h.vault
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&format!("touch {WEEKLY} Debounced"))
+    );
+
+    let texts = |items: Vec<Value>| -> Vec<String> {
+        items
+            .iter()
+            .map(|i| i["text"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(texts(list("?done=true").await), ["Write release notes"]);
+    assert_eq!(texts(list("?done=false").await), ["Book the room"]);
+
+    // Checking it again keeps the first time; unchecking clears it.
+    let again: Value = client
+        .patch(url(0))
+        .json(&json!({ "done": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(again["done_at"], done_at.as_str());
+    let open: Value = client
+        .patch(url(0))
+        .json(&json!({ "done": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(open["done"], false);
+    assert_eq!(open["done_at"], Value::Null);
+
+    let missing = client
+        .patch(url(2))
+        .json(&json!({ "done": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+    let stale = client
+        .patch(url(1))
+        .json(&json!({ "done": true, "text": "Book a room" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), 409);
+    let evil = client
+        .patch(url(1))
+        .header("Origin", "https://evil.example")
+        .json(&json!({ "done": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(evil.status(), 403);
+    let saved = Meeting::load(&h.meeting_path(WEEKLY)).unwrap();
+    assert!(!saved.summary.as_ref().unwrap().actions[1].done);
+}
+
+#[tokio::test]
+async fn action_item_toggle_refuses_while_a_job_runs() {
+    let h = harness().await;
+    set_actions(&h, WEEKLY, vec![action("Write release notes", None, None)]);
+    h.state
+        .index
+        .lock()
+        .unwrap()
+        .enqueue(&MeetingId(WEEKLY.into()), Step::Summarize)
+        .unwrap();
+    let res = reqwest::Client::new()
+        .patch(h.url(&format!("/api/meetings/{}/actions/0", encode(WEEKLY))))
+        .json(&json!({ "done": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body, json!({ "error": "meeting is being processed" }));
+    let saved = Meeting::load(&h.meeting_path(WEEKLY)).unwrap();
+    assert!(!saved.summary.as_ref().unwrap().actions[0].done);
 }
 
 #[tokio::test]

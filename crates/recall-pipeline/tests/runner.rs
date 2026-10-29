@@ -89,7 +89,7 @@ impl Diarizer for FakeDiarizer {
     }
 }
 
-const SUMMARY: &str = r#"{"one_line":"Said hello.","body":"Both sides said hello.","decisions":[],"actions":[],"chapters":[{"start_ms":0,"title":"Greetings"}]}"#;
+const SUMMARY: &str = r#"{"one_line":"Said hello.","body":"Both sides said hello.","decisions":[],"actions":[{"text":"Send the deck","owner":"Tom","due":"2026-11-03","priority":"high"}],"chapters":[{"start_ms":0,"title":"Greetings"}]}"#;
 
 /// A fixed summary, or an error when `fail` is set.
 struct FakeLlm {
@@ -325,6 +325,52 @@ async fn run_from_summarize_only_reruns_last_steps() {
     assert_eq!(
         progress,
         [(Step::Summarize, 5.0 / 6.0, true), (Step::Write, 1.0, true)]
+    );
+}
+
+#[tokio::test]
+async fn summary_rerun_keeps_done_marks() {
+    let f = fixture();
+    let calls = Calls::default();
+    let mut engines = engines(&calls, false);
+    let mut speakers = Speakers::default();
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut speakers,
+        Step::Segment,
+        |_, _, _| {},
+    )
+    .await
+    .unwrap();
+    let mut meeting = Meeting::load(&f.dir.path()).unwrap();
+    let at = Utc::now();
+    let action = &mut meeting.summary.as_mut().unwrap().actions[0];
+    action.done = true;
+    action.done_at = Some(at);
+    meeting.save(&f.dir.path()).unwrap();
+
+    run_from(
+        &mut engines,
+        &f.config,
+        &f.dir,
+        &mut speakers,
+        Step::Summarize,
+        |_, _, _| {},
+    )
+    .await
+    .unwrap();
+
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    let actions = &meeting.summary.as_ref().unwrap().actions;
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].done);
+    assert_eq!(actions[0].done_at, Some(at));
+    let md = std::fs::read_to_string(f.dir.markdown()).unwrap();
+    assert!(
+        md.contains("- [x] Send the deck 👤 Tom ⏫ 📅 2026-11-03 ✅ "),
+        "{md}"
     );
 }
 
