@@ -3,7 +3,7 @@
 //! notes there.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -129,66 +129,104 @@ impl ClaudeCode {
         ]);
         args
     }
+}
 
-    /// Runs one call and returns its stdout, killing the run (and anything
-    /// it started) when it outlasts the timeout.
-    async fn run(&self, system: &str, user: &str) -> Result<Vec<u8>> {
-        let mut child = Command::new(&self.command)
-            .args(self.args(system))
-            .current_dir(&self.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // Its own process group, so a timeout kills the tools it runs
-            // too, and a terminal's Ctrl-C meant for recall does not reach it.
-            .process_group(0)
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| format!("starting {:?} in {}", self.command, self.cwd.display()))?;
-        let pid = child.id();
-        let mut stdin = child.stdin.take().expect("stdin is piped");
-        let mut stdout = child.stdout.take().expect("stdout is piped");
-        let mut stderr = child.stderr.take().expect("stderr is piped");
-        let call = async {
-            let write = async move {
-                // A run that exits without reading all of stdin is reported
-                // by its exit status, not as a broken pipe. Dropping stdin
-                // at the end is the end of the message.
-                let _ = stdin.write_all(user.as_bytes()).await;
-            };
-            let (mut out, mut err) = (Vec::new(), Vec::new());
-            let (_, read_out, read_err) = tokio::join!(
-                write,
-                stdout.read_to_end(&mut out),
-                stderr.read_to_end(&mut err)
-            );
-            read_out?;
-            read_err?;
-            Ok::<_, std::io::Error>((child.wait().await?, out, err))
+/// Runs `command` in print mode with `args` in `cwd`, writes `input` to its
+/// stdin and returns the `result` text of its JSON output. The run gets its
+/// own process group and is killed with everything it started when it
+/// outlasts `timeout`. `args` must ask for `--output-format json`.
+///
+/// [`ClaudeCode`] summarizes through this; other callers (the calendar
+/// lookup) pass their own arguments and so their own tool limits.
+pub async fn print(
+    command: &str,
+    cwd: &Path,
+    args: &[String],
+    input: &str,
+    timeout: Duration,
+) -> Result<String> {
+    let stdout = run(command, cwd, args, input, timeout).await?;
+    Ok(parse(&stdout)?.result)
+}
+
+/// Runs one call and returns its stdout; see [`print`].
+async fn run(
+    command: &str,
+    cwd: &Path,
+    args: &[String],
+    input: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>> {
+    let mut child = Command::new(command)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Its own process group, so a timeout kills the tools it runs
+        // too, and a terminal's Ctrl-C meant for recall does not reach it.
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("starting {command:?} in {}", cwd.display()))?;
+    let pid = child.id();
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let call = async {
+        let write = async move {
+            // A run that exits without reading all of stdin is reported
+            // by its exit status, not as a broken pipe. Dropping stdin
+            // at the end is the end of the message.
+            let _ = stdin.write_all(input.as_bytes()).await;
         };
-        let finished = tokio::time::timeout(self.timeout, call).await;
-        let (status, stdout, stderr) = match finished {
-            Ok(output) => output.context("reading from Claude Code")?,
-            Err(_) => {
-                if let Some(pid) = pid {
-                    // SAFETY: killpg only sends a signal, to the group made
-                    // for this child above, whose leader is not reaped yet.
-                    unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
-                }
-                let _ = child.wait().await;
-                bail!(
-                    "Claude Code did not finish within {} s",
-                    self.timeout.as_secs()
-                );
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let (_, read_out, read_err) = tokio::join!(
+            write,
+            stdout.read_to_end(&mut out),
+            stderr.read_to_end(&mut err)
+        );
+        read_out?;
+        read_err?;
+        Ok::<_, std::io::Error>((child.wait().await?, out, err))
+    };
+    let finished = tokio::time::timeout(timeout, call).await;
+    let (status, stdout, stderr) = match finished {
+        Ok(output) => output.context("reading from Claude Code")?,
+        Err(_) => {
+            if let Some(pid) = pid {
+                // SAFETY: killpg only sends a signal, to the group made
+                // for this child above, whose leader is not reaped yet.
+                unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
             }
-        };
-        if !status.success() {
-            let detail = reply_text(&stdout)
-                .unwrap_or_else(|| quote(String::from_utf8_lossy(&stderr).trim()));
-            bail!("Claude Code exited with {status}: {detail}");
+            let _ = child.wait().await;
+            bail!("Claude Code did not finish within {} s", timeout.as_secs());
         }
-        Ok(stdout)
+    };
+    if !status.success() {
+        let detail =
+            reply_text(&stdout).unwrap_or_else(|| quote(String::from_utf8_lossy(&stderr).trim()));
+        bail!("Claude Code exited with {status}: {detail}");
     }
+    Ok(stdout)
+}
+
+/// The JSON result on `stdout`; a result that reports an error is one.
+fn parse(stdout: &[u8]) -> Result<PrintResult> {
+    let reply: PrintResult = serde_json::from_slice(stdout).with_context(|| {
+        format!(
+            "Claude Code output is not a JSON result: {}",
+            quote(&String::from_utf8_lossy(stdout))
+        )
+    })?;
+    if reply.is_error {
+        bail!(
+            "Claude Code reported an error ({}): {}",
+            reply.subtype,
+            quote(&reply.result)
+        );
+    }
+    Ok(reply)
 }
 
 /// The `result` text of a JSON result on `stdout`, if there is one; a
@@ -214,20 +252,9 @@ fn main_model(usage: &BTreeMap<String, Value>) -> Option<String> {
 #[async_trait]
 impl Llm for ClaudeCode {
     async fn complete(&self, system: &str, user: &str) -> Result<String> {
-        let stdout = self.run(system, user).await?;
-        let reply: PrintResult = serde_json::from_slice(&stdout).with_context(|| {
-            format!(
-                "Claude Code output is not a JSON result: {}",
-                quote(&String::from_utf8_lossy(&stdout))
-            )
-        })?;
-        if reply.is_error {
-            bail!(
-                "Claude Code reported an error ({}): {}",
-                reply.subtype,
-                quote(&reply.result)
-            );
-        }
+        let args = self.args(system);
+        let stdout = run(&self.command, &self.cwd, &args, user, self.timeout).await?;
+        let reply = parse(&stdout)?;
         if let Some(model) = main_model(&reply.model_usage) {
             *self.replied_model.lock().expect("not poisoned") = Some(model);
         }

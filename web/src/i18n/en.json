@@ -101,6 +101,7 @@
     "save_failed": "Could not save: {error}",
     "load_failed": "Could not load this meeting: {error}",
     "screen_error": "Screen recording failed: {error}",
+    "attendees": "Attendees: {names}",
     "delete_confirm_vault": "Delete “{title}” with its audio and transcript? Its note is also removed from the team vault, but stays in the vault's git history. This cannot be undone."
   },
   "summary": {

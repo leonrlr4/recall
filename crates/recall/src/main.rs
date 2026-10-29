@@ -406,6 +406,7 @@ fn transcribe_file(config: &Config, mic: &Path, computer: &Path, json: bool) -> 
         screen_offset_ms: None,
         screen_error: None,
         sync: false,
+        calendar: None,
     }
     .save(&dir.path())?;
 

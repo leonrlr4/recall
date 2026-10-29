@@ -120,6 +120,48 @@ pub struct Summary {
     pub chapters: Vec<Chapter>,
 }
 
+/// The calendar event a meeting was matched to by start time. Attendee
+/// emails stay in `meeting.json`: `meeting.md`, which the vault sync
+/// publishes, carries only names.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CalendarEvent {
+    /// The calendar's event id.
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub attendees: Vec<Attendee>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Attendee {
+    /// Display name; empty when the calendar has none.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub email: String,
+    /// As the calendar gives it: `accepted`, `declined`, `tentative` or
+    /// `needsAction`.
+    #[serde(default)]
+    pub response: String,
+    /// The calendar's owner, i.e. the user.
+    #[serde(default, rename = "self", skip_serializing_if = "std::ops::Not::not")]
+    pub is_self: bool,
+}
+
+impl CalendarEvent {
+    /// Names of the attendees other than the user who have not declined, in
+    /// calendar order; attendees without a name are left out.
+    pub fn attendee_names(&self) -> Vec<String> {
+        self.attendees
+            .iter()
+            .filter(|a| !a.is_self && a.response != "declined")
+            .map(|a| a.name.trim())
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Meeting {
     pub id: MeetingId,
@@ -148,6 +190,10 @@ pub struct Meeting {
     /// ones included.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sync: bool,
+    /// The user's calendar event at the meeting's start, when the calendar
+    /// lookup is on and found one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<CalendarEvent>,
 }
 
 impl Meeting {
@@ -244,6 +290,23 @@ mod tests {
             screen_offset_ms: Some(1_250),
             screen_error: None,
             sync: false,
+            calendar: Some(CalendarEvent {
+                id: "ev1".into(),
+                title: "Weekly sync".into(),
+                attendees: vec![
+                    attendee("Tom Lin", "tom@example.com", "accepted", false),
+                    attendee("", "leon@example.com", "accepted", true),
+                ],
+            }),
+        }
+    }
+
+    fn attendee(name: &str, email: &str, response: &str, is_self: bool) -> Attendee {
+        Attendee {
+            name: name.into(),
+            email: email.into(),
+            response: response.into(),
+            is_self,
         }
     }
 
@@ -262,7 +325,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut value = serde_json::to_value(sample()).unwrap();
         let object = value.as_object_mut().unwrap();
-        for key in ["participants_hint", "screen_offset_ms", "screen_error"] {
+        for key in [
+            "participants_hint",
+            "screen_offset_ms",
+            "screen_error",
+            "calendar",
+        ] {
             object.remove(key);
         }
         value["clusters"][0]
@@ -275,6 +343,7 @@ mod tests {
         assert!(loaded.participants_hint.is_empty());
         assert_eq!(loaded.screen_offset_ms, None);
         assert_eq!(loaded.screen_error, None);
+        assert_eq!(loaded.calendar, None);
         assert_eq!(loaded.clusters[0].named_by, None);
 
         loaded.save(dir.path()).unwrap();
@@ -282,7 +351,32 @@ mod tests {
             serde_json::from_slice(&fs::read(dir.path().join(FILE)).unwrap()).unwrap();
         assert!(saved.get("screen_offset_ms").is_none());
         assert!(saved.get("screen_error").is_none());
+        assert!(saved.get("calendar").is_none());
         assert!(saved["clusters"][0].get("named_by").is_none());
+    }
+
+    #[test]
+    fn attendee_names_skip_the_user_the_nameless_and_those_who_declined() {
+        let event = CalendarEvent {
+            id: "e".into(),
+            title: "t".into(),
+            attendees: vec![
+                attendee("Tom Lin", "tom@example.com", "accepted", false),
+                attendee("Me", "me@example.com", "accepted", true),
+                attendee(" ", "anon@example.com", "needsAction", false),
+                attendee("Bob", "bob@example.com", "declined", false),
+                attendee("Amy Chen", "amy@example.com", "tentative", false),
+            ],
+        };
+        assert_eq!(event.attendee_names(), ["Tom Lin", "Amy Chen"]);
+        let json = serde_json::to_value(&event.attendees[1]).unwrap();
+        assert_eq!(json["self"], true);
+        assert!(
+            serde_json::to_value(&event.attendees[0])
+                .unwrap()
+                .get("self")
+                .is_none()
+        );
     }
 
     #[test]

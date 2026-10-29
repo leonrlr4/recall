@@ -1,5 +1,6 @@
 //! The recall daemon and its command-line client.
 
+pub mod calendar;
 pub mod control;
 pub mod daemon;
 pub mod meet_sink;

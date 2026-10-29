@@ -150,6 +150,7 @@ fn sample(id: &MeetingId, title: &str, alice: &SpeakerId, text: &str) -> Meeting
         screen_offset_ms: None,
         screen_error: None,
         sync: false,
+        calendar: None,
     }
 }
 

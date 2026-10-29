@@ -141,17 +141,25 @@ fn fixture() -> Fixture {
 /// Like [`fixture`], `secs` long, the system audio's tone lasting from the
 /// first second to the end.
 fn fixture_lasting(secs: u32) -> Fixture {
+    fixture_with(secs, "Worker test", |_, _| {})
+}
+
+/// Like [`fixture_lasting`], titled `title`, with the config changed by
+/// `configure`, which gets the fixture's temporary directory.
+fn fixture_with(secs: u32, title: &str, configure: impl FnOnce(&Path, &mut Config)) -> Fixture {
     let tmp = TempDir::new().unwrap();
-    let config = Arc::new(Config {
+    let mut config = Config {
         meetings_dir: tmp.path().join("meetings"),
         data_dir: tmp.path().join("data"),
         ..Config::default()
-    });
-    let dir = MeetingDir::create(&config.meetings_dir, Local::now(), "Worker test").unwrap();
+    };
+    configure(tmp.path(), &mut config);
+    let config = Arc::new(config);
+    let dir = MeetingDir::create(&config.meetings_dir, Local::now(), title).unwrap();
     write_audio(&dir.audio(), secs);
     let meeting = Meeting {
         id: dir.id.clone(),
-        title: "Worker test".into(),
+        title: title.into(),
         started: Utc::now(),
         duration_ms: secs * 1_000,
         source_app: None,
@@ -164,6 +172,7 @@ fn fixture_lasting(secs: u32) -> Fixture {
         screen_offset_ms: None,
         screen_error: None,
         sync: false,
+        calendar: None,
     };
     meeting.save(&dir.path()).unwrap();
     let speakers = Speakers::default();
@@ -221,6 +230,7 @@ fn worker_with(f: &Fixture, make: impl Fn() -> Result<Engines> + Send + Sync + '
             Box::pin(async move { make() })
         }),
         notifications: false,
+        vault: None,
     }
 }
 
@@ -575,4 +585,127 @@ fn voice_enrolled_through_meet_reaches_the_shared_registry() {
     );
     let on_disk = Speakers::load(&f.config.speakers_path()).unwrap();
     assert_eq!(on_disk.get(&tom).unwrap().embeddings, voices);
+}
+
+/// A fake `claude` in `dir` that saves its stdin to `stdin.txt` and prints
+/// a print-mode JSON result whose text is `reply`, or fails without one.
+fn fake_claude(dir: &Path, reply: Option<&str>) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("claude");
+    let body = match reply {
+        Some(reply) => {
+            let result = serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "result": reply,
+            });
+            std::fs::write(dir.join("reply.json"), result.to_string()).unwrap();
+            format!(
+                "cat > '{0}/stdin.txt'\ncat '{0}/reply.json'\n",
+                dir.display()
+            )
+        }
+        None => "echo 'not logged in' >&2\nexit 1\n".into(),
+    };
+    std::fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// An event from two minutes before now to half an hour after.
+fn calendar_reply() -> String {
+    let now = Utc::now();
+    let at = |minutes: i64| (now + chrono::Duration::minutes(minutes)).to_rfc3339();
+    serde_json::json!([{
+        "id": "ev1",
+        "title": "Interns culture fit",
+        "start": at(-2),
+        "end": at(30),
+        "all_day": false,
+        "attendees": [
+            {"name": "Tom Lin", "email": "tom@example.com", "response": "accepted", "self": false},
+            {"name": null, "email": "me@example.com", "response": "accepted", "self": true},
+        ],
+    }])
+    .to_string()
+}
+
+fn with_calendar(reply: Option<String>) -> impl FnOnce(&Path, &mut Config) {
+    move |tmp, config| {
+        config.calendar.enabled = true;
+        config.claude_code.command = fake_claude(tmp, reply.as_deref())
+            .to_string_lossy()
+            .into_owned();
+    }
+}
+
+#[test]
+fn calendar_event_titles_a_default_meeting_and_names_its_attendees() {
+    let default_title = format!("Meeting {}", Local::now().format("%H:%M"));
+    let f = fixture_with(2, &default_title, with_calendar(Some(calendar_reply())));
+    let mut rx = f.events.subscribe();
+    let mut worker = worker(&f, false);
+
+    assert!(worker.run_next(&runtime(), &mut None).unwrap());
+
+    let stdin = std::fs::read_to_string(f._tmp.path().join("stdin.txt")).unwrap();
+    assert!(stdin.contains("List the events"), "{stdin}");
+    assert!(!f.dir.path().exists(), "the directory moved");
+    let ids = MeetingDir::list(&f.config.meetings_dir).unwrap();
+    assert_eq!(ids.len(), 1);
+    let id = ids[0].clone();
+    assert!(id.0.ends_with(" Interns culture fit"), "{id:?}");
+    let dir = MeetingDir::open(&f.config.meetings_dir, &id).unwrap();
+    let meeting = Meeting::load(&dir.path()).unwrap();
+    assert_eq!(meeting.id, id);
+    assert_eq!(meeting.title, "Interns culture fit");
+    assert_eq!(meeting.participants_hint, ["Tom Lin"]);
+    let event = meeting.calendar.as_ref().unwrap();
+    assert_eq!(event.id, "ev1");
+    assert_eq!(event.attendees[0].email, "tom@example.com");
+    let md = std::fs::read_to_string(dir.markdown()).unwrap();
+    assert!(md.contains("attendees: [Tom Lin]\n"), "{md}");
+    assert!(!md.contains('@'), "{md}");
+
+    let events = drain(&mut rx);
+    assert!(
+        matches!(events.last(), Some(Event::Done { meeting }) if meeting == &id),
+        "{events:?}"
+    );
+    let index = f.index.lock().unwrap();
+    let rows = index.list(&ListFilter::default()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, id);
+    assert_eq!(rows[0].state, "done");
+    assert_eq!(index.active_job(&f.dir.id).unwrap(), None);
+}
+
+#[test]
+fn calendar_event_keeps_a_title_the_user_typed() {
+    let f = fixture_with(2, "Worker test", with_calendar(Some(calendar_reply())));
+    let mut worker = worker(&f, false);
+
+    assert!(worker.run_next(&runtime(), &mut None).unwrap());
+
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    assert_eq!(meeting.title, "Worker test");
+    assert_eq!(meeting.participants_hint, ["Tom Lin"]);
+    assert!(meeting.calendar.is_some());
+    assert_eq!(state(&f), "done");
+}
+
+#[test]
+fn failed_calendar_lookup_changes_nothing() {
+    let default_title = format!("Meeting {}", Local::now().format("%H:%M"));
+    let f = fixture_with(2, &default_title, with_calendar(None));
+    let mut worker = worker(&f, false);
+
+    assert!(worker.run_next(&runtime(), &mut None).unwrap());
+
+    let meeting = Meeting::load(&f.dir.path()).unwrap();
+    assert_eq!(meeting.title, default_title);
+    assert_eq!(meeting.calendar, None);
+    assert!(meeting.participants_hint.is_empty());
+    assert_eq!(state(&f), "done");
 }
