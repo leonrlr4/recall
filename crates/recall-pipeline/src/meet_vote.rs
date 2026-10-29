@@ -17,7 +17,11 @@ pub struct Interval {
 }
 
 /// Least overlapped speech, in milliseconds, a name needs to win a cluster.
-const MIN_VOTE_MS: i64 = 30_000;
+/// Meet's own speaking indicator is direct evidence, so a few seconds is
+/// enough; 30 s left anyone who said little in a short call unnamed (a
+/// remote who spoke 8 s of a 2 min test call). The 60% share still guards
+/// against crosstalk.
+const MIN_VOTE_MS: i64 = 5_000;
 /// Share of a cluster's overlapped speech, in percent, a name needs to win it.
 const MIN_VOTE_PERCENT: i64 = 60;
 
@@ -295,12 +299,15 @@ mod tests {
     }
 
     #[test]
-    fn vote_needs_30s_and_60_percent() {
+    fn vote_needs_5s_and_60_percent() {
         let clusters = [cluster("Remote 1")];
         let segments = [seg(0, 100_000, "cluster:0")];
 
-        let alone = [interval(0, 29_000, "Tom")];
+        let alone = [interval(0, 4_999, "Tom")];
         assert_eq!(vote(&clusters, &segments, &alone), [None]);
+
+        let brief = [interval(0, 5_000, "Tom")];
+        assert_eq!(vote(&clusters, &segments, &brief), [Some("Tom".into())]);
 
         let split = [interval(0, 40_000, "Tom"), interval(50_000, 80_000, "Amy")];
         assert_eq!(vote(&clusters, &segments, &split), [None]);

@@ -253,7 +253,7 @@ extension's address is fixed, so it stops reaching the daemon if you change
 
 After the call, a diarization cluster takes a Meet name when that name was
 the only one speaking for at least 60% of the cluster's overlapping speech
-and at least 30 s of it. Voices named this way join `speakers.json`, so the
+and at least 5 s of it. Voices named this way join `speakers.json`, so the
 next meeting recognises them without Meet.
 
 ## Screen recording
