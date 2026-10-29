@@ -7,6 +7,7 @@ describe('router', () => {
     expect(match('/todo')).toEqual({ name: 'todo' });
     expect(match('/people')).toEqual({ name: 'people' });
     expect(match('/settings')).toEqual({ name: 'settings' });
+    expect(match('/ask')).toEqual({ name: 'ask' });
     expect(match('/nope')).toEqual({ name: 'not_found' });
   });
 

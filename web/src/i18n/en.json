@@ -3,6 +3,7 @@
     "label": "Main",
     "meetings": "Meetings",
     "todo": "To-do",
+    "ask": "Ask",
     "people": "People",
     "settings": "Settings"
   },
@@ -179,6 +180,17 @@
     "stopped": "(stopped)",
     "failed": "Could not get an answer. Check that the language model is running.",
     "too_long": "This meeting is too long for the language model's context. Raise \"Context size\" in Settings."
+  },
+  "qa": {
+    "title": "Ask across meetings",
+    "intro": "Ask about your synced work meetings. Claude Code searches them with your project notes as context, and links each point to the meeting and moment it came from. The transcripts it reads are sent to Anthropic.",
+    "placeholder": "What did we decide with Arlene about TRL6 last week?",
+    "working": "Searching meetings… {seconds} s",
+    "cited": "Cited meetings",
+    "busy": "Another question is still being answered. Try again when it is done.",
+    "failed": "Could not get an answer from Claude Code.",
+    "off": "Questions across meetings need Claude Code. Turn it on in recall's config file (~/.config/recall/config.toml), then restart recall:",
+    "off_hint": "cwd is your work directory; Claude Code reads its CLAUDE.md files and notes for context. Only meetings switched to sync are searched."
   },
   "people": {
     "title": "People",

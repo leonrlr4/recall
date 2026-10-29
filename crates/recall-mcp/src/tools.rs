@@ -231,10 +231,21 @@ struct Person {
     named: bool,
 }
 
+/// The tools [`Recall::synced_only`] keeps: they read meetings and nothing
+/// else.
+const SYNCED_TOOLS: [&str; 4] = [
+    "search_meetings",
+    "get_meeting",
+    "get_transcript",
+    "list_action_items",
+];
+
 #[derive(Clone)]
 pub struct Recall {
     daemon: Daemon,
     tool_router: ToolRouter<Self>,
+    /// See [`Recall::synced_only`].
+    synced_only: bool,
 }
 
 impl Recall {
@@ -242,11 +253,49 @@ impl Recall {
         Ok(Self {
             daemon: Daemon::new(base)?,
             tool_router: Self::tool_router(),
+            synced_only: false,
         })
     }
 
+    /// The tools for a run that may see only the meetings marked for sync
+    /// (work meetings the user published), such as recall's cross-meeting
+    /// questions to Claude Code: the read tools alone, and every meeting
+    /// without `sync` is absent from them, as if it did not exist. recall
+    /// records private calls too; this is what keeps them out, whatever the
+    /// model is told.
+    pub fn synced_only(base: Url) -> anyhow::Result<Self> {
+        let mut tool_router = Self::tool_router();
+        let names: Vec<String> = tool_router
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.into_owned())
+            .collect();
+        for name in names.iter().filter(|n| !SYNCED_TOOLS.contains(&n.as_str())) {
+            tool_router.remove_route(name);
+        }
+        Ok(Self {
+            daemon: Daemon::new(base)?,
+            tool_router,
+            synced_only: true,
+        })
+    }
+
+    /// `synced=true` for the list endpoints in synced-only mode, which then
+    /// leave out every meeting without `sync`.
+    fn scope(&self) -> Option<(&'static str, String)> {
+        self.synced_only.then(|| ("synced", "true".to_string()))
+    }
+
     async fn meeting(&self, id: &str) -> ToolResult<MeetingResponse> {
-        self.daemon.get(&["api", "meetings", id], &[]).await
+        let response: MeetingResponse = self.daemon.get(&["api", "meetings", id], &[]).await?;
+        if self.synced_only && !response.meeting.sync {
+            // The daemon's own 404 text, so the reply does not tell a
+            // private meeting from a missing one.
+            return Err(format!(
+                "recall daemon returned 404 Not Found: no meeting {id:?}"
+            ));
+        }
+        Ok(response)
     }
 }
 
@@ -259,10 +308,10 @@ impl Recall {
         &self,
         Parameters(args): Parameters<SearchArgs>,
     ) -> ToolResult<String> {
-        let list: MeetingList = self
-            .daemon
-            .get(&["api", "meetings"], &[("q", args.query)])
-            .await?;
+        let query: Vec<_> = std::iter::once(("q", args.query))
+            .chain(self.scope())
+            .collect();
+        let list: MeetingList = self.daemon.get(&["api", "meetings"], &query).await?;
         Ok(render_search(&list, args.limit))
     }
 
@@ -318,6 +367,7 @@ impl Recall {
         ]
         .into_iter()
         .filter_map(|(k, v)| Some((k, v?)))
+        .chain(self.scope())
         .collect();
         let items = self.daemon.get(&["api", "action-items"], &query).await?;
         Ok(Json(ActionItems { items }))

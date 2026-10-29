@@ -5,6 +5,7 @@
   import { applyConfiguredLocale, t } from './lib/i18n';
   import { connectLive } from './lib/live.svelte';
   import { current, link, onRoute, type Route } from './lib/router';
+  import AskAll from './routes/AskAll.svelte';
   import List from './routes/List.svelte';
   import Meeting from './routes/Meeting.svelte';
   import People from './routes/People.svelte';
@@ -29,6 +30,8 @@
           ? t('nav.settings')
           : route.name === 'todo'
             ? t('nav.todo')
+          : route.name === 'ask'
+            ? t('nav.ask')
             : null;
     if (route.name !== 'meeting') document.title = title ? `${title} · recall` : 'recall';
   });
@@ -45,6 +48,7 @@
         {t('nav.meetings')}
       </a>
       <a href="/todo" onclick={link} class:active={route.name === 'todo'}>{t('nav.todo')}</a>
+      <a href="/ask" onclick={link} class:active={route.name === 'ask'}>{t('nav.ask')}</a>
       <a href="/people" onclick={link} class:active={route.name === 'people'}>{t('nav.people')}</a>
       <a href="/settings" onclick={link} class:active={route.name === 'settings'}>
         {t('nav.settings')}
@@ -63,6 +67,8 @@
     {/key}
   {:else if route.name === 'todo'}
     <Todo />
+  {:else if route.name === 'ask'}
+    <AskAll />
   {:else if route.name === 'people'}
     <People />
   {:else if route.name === 'settings'}

@@ -29,7 +29,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
 use recall_audio::detect::Detector;
 use recall_audio::state::{Action, DetectEvent, Phase, Session};
-use recall_server::{AppState, ControlCommand, StatusSnapshot};
+use recall_server::{AppState, ControlCommand, QaState, StatusSnapshot};
 use recall_store::{Config, Event, Index, MeetingId, Speakers, Step};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast;
@@ -200,6 +200,10 @@ pub async fn run(config: Config) -> Result<()> {
             })
         },
         vault,
+        // Questions across meetings start this binary as their MCP server.
+        qa: std::env::current_exe()
+            .map(QaState::new)
+            .unwrap_or_default(),
     };
     let mut http_server = tokio::spawn(recall_server::serve(state));
 

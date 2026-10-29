@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use recall_store::config::ClaudeCodeConfig;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -51,6 +51,8 @@ pub struct ClaudeCode {
     cwd: PathBuf,
     model: Option<String>,
     timeout: Duration,
+    /// Directories the run may not read; see [`ClaudeCode::hiding`].
+    hidden: Vec<PathBuf>,
     /// The model the last reply came from, as Claude Code reported it.
     replied_model: Mutex<Option<String>>,
     /// Appended to the caller's system prompt; see [`ClaudeCode::for_task`].
@@ -80,6 +82,7 @@ impl ClaudeCode {
             cwd,
             model: model.filter(|m| !m.is_empty()),
             timeout,
+            hidden: Vec::new(),
             replied_model: Mutex::new(None),
             note: CONTEXT_NOTE.into(),
             add_dirs: Vec::new(),
@@ -92,6 +95,20 @@ impl ClaudeCode {
     pub fn for_task(mut self, note: &str, dirs: Vec<PathBuf>) -> Self {
         self.note = note.into();
         self.add_dirs = dirs;
+        self
+    }
+
+    /// Denies the file tools every path under `dirs`, e.g. the meetings
+    /// directory, whose private calls a run about synced meetings must not
+    /// read. Rules are by path, so `dirs` should be absolute.
+    pub fn hiding(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.hidden = dirs;
+        self
+    }
+
+    /// Lowers the timeout to `max` when the configured one is longer.
+    pub fn with_timeout_at_most(mut self, max: Duration) -> Self {
+        self.timeout = self.timeout.min(max);
         self
     }
 
@@ -133,6 +150,7 @@ impl ClaudeCode {
         ]
         .map(String::from)
         .to_vec();
+        args.extend(self.deny_args());
         if let Some(model) = &self.model {
             args.extend(["--model".into(), model.clone()]);
         }
@@ -148,11 +166,65 @@ impl ClaudeCode {
         args
     }
 
-    /// Runs one call and returns its stdout, killing the run (and anything
-    /// it started) when it outlasts the timeout.
-    async fn run(&self, system: &str, user: &str) -> Result<Vec<u8>> {
-        let mut child = Command::new(&self.command)
-            .args(self.args(system))
+    /// `--disallowedTools` with a `Read` rule per hidden directory; Claude
+    /// Code applies `Read` rules to Grep and Glob too. `//` starts an
+    /// absolute path in a rule.
+    fn deny_args(&self) -> Vec<String> {
+        if self.hidden.is_empty() {
+            return Vec::new();
+        }
+        let rules: Vec<String> = self
+            .hidden
+            .iter()
+            .map(|d| format!("Read(/{}/**)", d.to_string_lossy().trim_end_matches('/')))
+            .collect();
+        vec!["--disallowedTools".into(), rules.join(",")]
+    }
+
+    /// The arguments for [`ClaudeCode::run_agent`]: like
+    /// [`ClaudeCode::args`], but streaming JSON events, with `mcp`'s servers
+    /// and tools added, and `system` appended as it is.
+    ///
+    /// `--strict-mcp-config` keeps every other MCP server out, the user's
+    /// own `recall` registration included, so only the servers `mcp` starts
+    /// (with the flags it gives them) are reachable.
+    fn agent_args(&self, system: &str, mcp: &McpAccess) -> Vec<String> {
+        let allowed = std::iter::once(TOOLS.to_string())
+            .chain(mcp.tools.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut args: Vec<String> = [
+            "-p",
+            "--output-format",
+            "stream-json",
+            // Print mode requires it for stream-json.
+            "--verbose",
+            "--include-partial-messages",
+            "--no-session-persistence",
+            "--tools",
+            TOOLS,
+            "--allowedTools",
+            &allowed,
+            "--permission-mode",
+            "dontAsk",
+            "--mcp-config",
+            &mcp.config,
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+        ]
+        .map(String::from)
+        .to_vec();
+        args.extend(self.deny_args());
+        if let Some(model) = &self.model {
+            args.extend(["--model".into(), model.clone()]);
+        }
+        args.extend(["--append-system-prompt".into(), system.to_string()]);
+        args
+    }
+
+    fn spawn(&self, args: Vec<String>) -> Result<tokio::process::Child> {
+        Command::new(&self.command)
+            .args(args)
             .current_dir(&self.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -162,7 +234,89 @@ impl ClaudeCode {
             .process_group(0)
             .kill_on_drop(true)
             .spawn()
-            .with_context(|| format!("starting {:?} in {}", self.command, self.cwd.display()))?;
+            .with_context(|| format!("starting {:?} in {}", self.command, self.cwd.display()))
+    }
+
+    /// Runs Claude Code as an agent with the MCP servers and tools in
+    /// `mcp`, `user` on stdin, and returns the final answer. Text and tool
+    /// calls go to `tx` as they happen; the text includes what the model
+    /// writes between tool calls, which the answer leaves out. The run and
+    /// everything it started (MCP servers included) are killed after the
+    /// timeout, or when the returned future is dropped.
+    pub async fn run_agent(
+        &self,
+        system: &str,
+        user: &str,
+        mcp: &McpAccess,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<String> {
+        let mut child = self.spawn(self.agent_args(system, mcp))?;
+        let group = KillGroup(child.id());
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let mut stderr = child.stderr.take().expect("stderr is piped");
+        let call = async {
+            let write = async move {
+                let _ = stdin.write_all(user.as_bytes()).await;
+            };
+            let read = async {
+                let mut lines = BufReader::new(stdout).lines();
+                let mut result = None;
+                while let Some(line) = lines.next_line().await? {
+                    match parse_stream_line(&line) {
+                        // A closed receiver only means nobody is watching.
+                        Some(StreamLine::Event(event)) => _ = tx.send(event).await,
+                        Some(StreamLine::Result(r)) => result = Some(r),
+                        None => {}
+                    }
+                }
+                Ok::<_, std::io::Error>(result)
+            };
+            let mut err = Vec::new();
+            let (_, result, read_err) = tokio::join!(write, read, stderr.read_to_end(&mut err));
+            let result = result?;
+            read_err?;
+            Ok::<_, std::io::Error>((child.wait().await?, result, err))
+        };
+        let (status, result, stderr) = match tokio::time::timeout(self.timeout, call).await {
+            Ok(output) => output.context("reading from Claude Code")?,
+            Err(_) => bail!(
+                "Claude Code did not finish within {} s",
+                self.timeout.as_secs()
+            ),
+        };
+        // Reaped by `wait`: the group is gone and its id may be reused.
+        std::mem::forget(group);
+        let detail = || {
+            result
+                .as_ref()
+                .map(|r| quote(&r.result))
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| quote(String::from_utf8_lossy(&stderr).trim()))
+        };
+        if !status.success() {
+            bail!("Claude Code exited with {status}: {}", detail());
+        }
+        let Some(reply) = result else {
+            bail!("Claude Code sent no result: {}", detail());
+        };
+        if reply.is_error {
+            bail!(
+                "Claude Code reported an error ({}): {}",
+                reply.subtype,
+                quote(&reply.result)
+            );
+        }
+        if let Some(model) = main_model(&reply.model_usage) {
+            *self.replied_model.lock().expect("not poisoned") = Some(model);
+        }
+        Ok(reply.result)
+    }
+
+    /// Runs one call and returns its stdout, killing the run (and anything
+    /// it started) when it outlasts the timeout.
+    async fn run(&self, system: &str, user: &str) -> Result<Vec<u8>> {
+        let mut child = self.spawn(self.args(system))?;
         let pid = child.id();
         let mut stdin = child.stdin.take().expect("stdin is piped");
         let mut stdout = child.stdout.take().expect("stdout is piped");
@@ -206,6 +360,77 @@ impl ClaudeCode {
             bail!("Claude Code exited with {status}: {detail}");
         }
         Ok(stdout)
+    }
+}
+
+/// MCP servers and tools for [`ClaudeCode::run_agent`], on top of the
+/// read-only file tools.
+pub struct McpAccess {
+    /// `--mcp-config`: a JSON object with `mcpServers`, or a path to one.
+    pub config: String,
+    /// Added to `--allowedTools`, e.g. `mcp__recall` for every tool of the
+    /// server named `recall`.
+    pub tools: Vec<String>,
+}
+
+/// What an agent run is doing, as it happens.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentEvent {
+    /// A piece of the model's text.
+    Text(String),
+    /// A tool call, named as Claude Code names it (MCP tools as
+    /// `mcp__<server>__<tool>`), with its arguments.
+    Tool { name: String, input: Value },
+}
+
+/// One line of `--output-format stream-json` that recall reads.
+enum StreamLine {
+    Event(AgentEvent),
+    Result(PrintResult),
+}
+
+/// Text deltas (sent with `--include-partial-messages`), the tool calls in
+/// each whole assistant message, and the final result. Everything else (the
+/// init line, tool results, the text of whole messages, which the deltas
+/// already carried) is `None`.
+fn parse_stream_line(line: &str) -> Option<StreamLine> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    match value["type"].as_str()? {
+        "stream_event" => {
+            let event = &value["event"];
+            let delta = &event["delta"];
+            if event["type"] != "content_block_delta" || delta["type"] != "text_delta" {
+                return None;
+            }
+            let text = delta["text"].as_str().filter(|t| !t.is_empty())?;
+            Some(StreamLine::Event(AgentEvent::Text(text.to_string())))
+        }
+        "assistant" => {
+            let blocks = value["message"]["content"].as_array()?;
+            let tool = blocks.iter().find(|b| b["type"] == "tool_use")?;
+            Some(StreamLine::Event(AgentEvent::Tool {
+                name: tool["name"].as_str().unwrap_or_default().to_string(),
+                input: tool["input"].clone(),
+            }))
+        }
+        "result" => serde_json::from_value(value).ok().map(StreamLine::Result),
+        _ => None,
+    }
+}
+
+/// Kills the process group led by the pid when dropped, unless forgotten.
+/// `kill_on_drop` kills only the leader, and a dropped run's MCP servers
+/// would outlive it.
+struct KillGroup(Option<u32>);
+
+impl Drop for KillGroup {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            // SAFETY: killpg only sends a signal, to the group made for the
+            // child in `spawn`. The guard is forgotten once `wait` reaps
+            // the leader, so the id has not been reused.
+            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        }
     }
 }
 
@@ -323,6 +548,121 @@ mod tests {
         assert_eq!(
             args[args.iter().position(|a| a == "--tools").unwrap() + 1],
             TOOLS
+        );
+    }
+
+    #[test]
+    fn agent_args_add_only_the_given_mcp_server_and_hide_dirs() {
+        let cc =
+            ClaudeCode::new("claude", PathBuf::from("/w"), None, Duration::from_secs(1)).hiding(
+                vec![PathBuf::from("/home/u/Meetings/"), PathBuf::from("/d")],
+            );
+        let mcp = McpAccess {
+            config: r#"{"mcpServers":{}}"#.into(),
+            tools: vec!["mcp__recall".into()],
+        };
+        let args = cc.agent_args("SYSTEM", &mcp);
+        let after = |flag: &str| {
+            let i = args.iter().position(|a| a == flag).unwrap();
+            args[i + 1].as_str()
+        };
+        assert_eq!(after("--output-format"), "stream-json");
+        assert_eq!(after("--tools"), "Read,Grep,Glob");
+        assert_eq!(after("--allowedTools"), "Read,Grep,Glob,mcp__recall");
+        assert_eq!(after("--mcp-config"), r#"{"mcpServers":{}}"#);
+        assert_eq!(
+            after("--disallowedTools"),
+            "Read(//home/u/Meetings/**),Read(//d/**)"
+        );
+        assert_eq!(after("--permission-mode"), "dontAsk");
+        assert_eq!(after("--append-system-prompt"), "SYSTEM");
+        for flag in [
+            "--strict-mcp-config",
+            "--no-session-persistence",
+            "--verbose",
+        ] {
+            assert!(args.iter().any(|a| a == flag), "missing {flag}");
+        }
+        // Summaries keep their arguments unless a caller hides directories.
+        let plain = ClaudeCode::new("claude", PathBuf::from("/w"), None, Duration::from_secs(1));
+        assert!(!plain.args("S").iter().any(|a| a == "--disallowedTools"));
+    }
+
+    #[test]
+    fn stream_lines_give_text_tool_calls_and_the_result() {
+        let text = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"上週"}}}"#;
+        assert!(matches!(
+            parse_stream_line(text),
+            Some(StreamLine::Event(AgentEvent::Text(t))) if t == "上週"
+        ));
+        let tool = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","id":"t1","name":"mcp__recall__search_meetings","input":{"query":"TRL6"}}]}}"#;
+        match parse_stream_line(tool) {
+            Some(StreamLine::Event(AgentEvent::Tool { name, input })) => {
+                assert_eq!(name, "mcp__recall__search_meetings");
+                assert_eq!(input["query"], "TRL6");
+            }
+            _ => panic!("not a tool call"),
+        }
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"result":"答案"}"#;
+        assert!(matches!(
+            parse_stream_line(result),
+            Some(StreamLine::Result(r)) if r.result == "答案"
+        ));
+        for other in [
+            r#"{"type":"system","subtype":"init"}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{"}}}"#,
+            "not json",
+        ] {
+            assert!(parse_stream_line(other).is_none(), "{other}");
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_run_streams_events_and_returns_the_result() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("claude");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncat > /dev/null\n\
+             echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"mcp__recall__get_meeting\",\"input\":{\"id\":\"m\"}}]}}'\n\
+             echo '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}}'\n\
+             echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"modelUsage\":{\"claude-opus-5-5\":{\"outputTokens\":3}}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cc = ClaudeCode::new(
+            script.to_str().unwrap(),
+            tmp.path().to_path_buf(),
+            None,
+            Duration::from_secs(10),
+        );
+        let mcp = McpAccess {
+            config: "{}".into(),
+            tools: Vec::new(),
+        };
+        let (tx, mut rx) = mpsc::channel(8);
+        let answer = cc.run_agent("S", "Q", &mcp, tx).await.unwrap();
+        assert_eq!(answer, "done");
+        assert!(matches!(rx.recv().await, Some(AgentEvent::Tool { .. })));
+        assert_eq!(rx.recv().await, Some(AgentEvent::Text("hi".into())));
+        assert_eq!(cc.name(), "claude-code/claude-opus-5-5");
+
+        let slow = tmp.path().join("slow");
+        std::fs::write(&slow, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cc = ClaudeCode::new(
+            slow.to_str().unwrap(),
+            tmp.path().to_path_buf(),
+            None,
+            Duration::from_secs(1),
+        );
+        let (tx, _rx) = mpsc::channel(8);
+        let err = cc.run_agent("S", "Q", &mcp, tx).await.unwrap_err();
+        assert!(
+            err.to_string().contains("did not finish within 1 s"),
+            "{err}"
         );
     }
 

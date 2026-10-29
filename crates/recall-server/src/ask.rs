@@ -1,18 +1,22 @@
 //! `POST /api/meetings/{id}/ask`: a question about one meeting, answered by
-//! the LLM and streamed back as server-sent events.
+//! the LLM, or by Claude Code for a synced meeting, and streamed back as
+//! server-sent events.
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
+use recall_llm::{CLAUDE_CODE_BUDGET_CHARS, ClaudeCode, Llm};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use crate::AppState;
 use crate::error::{ApiError, ApiResult};
-use crate::meetings::{load, open_dir};
+use crate::meetings::{SyncedSet, load, open_dir};
+use crate::qa::hidden_dirs;
 
 /// Tokens buffered between the LLM task and the response.
 const TOKEN_BUFFER: usize = 64;
@@ -33,6 +37,11 @@ pub struct AskBody {
 /// [`recall_store::LlmConfig::transcript_budget_chars`] gets the [`TOO_LONG`]
 /// error without calling the model, since the model would see only part of
 /// it.
+///
+/// A meeting marked for sync goes to Claude Code when `[claude_code]` is
+/// enabled, as its summary does, with [`CLAUDE_CODE_BUDGET_CHARS`] as the
+/// budget; its reply arrives as one piece. Every other meeting stays on the
+/// configured model.
 pub async fn ask(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -48,13 +57,22 @@ pub async fn ask(
         let speakers = state.speakers.lock().expect("speakers lock poisoned");
         recall_llm::meeting_transcript(&meeting.segments, &speakers)
     };
-    let fits = transcript.chars().count() + question.chars().count()
-        <= state.config.llm.transcript_budget_chars();
+    let cc = &state.config.claude_code;
+    let claude = cc.enabled && SyncedSet::new(&state).contains(&dir.id);
+    let (llm, budget): (Arc<dyn Llm>, usize) = if claude {
+        let claude = ClaudeCode::from_config(cc).hiding(hidden_dirs(&state.config));
+        (Arc::new(claude), CLAUDE_CODE_BUDGET_CHARS)
+    } else {
+        (
+            state.llm.clone(),
+            state.config.llm.transcript_budget_chars(),
+        )
+    };
+    let fits = transcript.chars().count() + question.chars().count() <= budget;
     let system = recall_llm::ask_prompt(&state.config.summary_lang);
     let user = format!("Transcript:\n{transcript}\nQuestion: {question}");
 
     let (tx, mut rx) = mpsc::channel::<String>(TOKEN_BUFFER);
-    let llm = state.llm.clone();
     let task = tokio::spawn(async move {
         if !fits {
             anyhow::bail!(TOO_LONG);

@@ -8,7 +8,7 @@ use recall_store::{ActionItem, ListFilter, Meeting, MeetingDir, MeetingId, Prior
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
-use crate::meetings::{ensure_idle, load, non_empty, open_dir, refresh};
+use crate::meetings::{SyncedSet, ensure_idle, load, non_empty, open_dir, refresh};
 use crate::{AppState, SyncWhen};
 
 #[derive(Deserialize)]
@@ -24,6 +24,9 @@ pub struct ActionQuery {
     due_to: Option<String>,
     /// Only done (`true`) or only open (`false`) items.
     done: Option<bool>,
+    /// `true`: only meetings marked for sync.
+    #[serde(default)]
+    synced: bool,
 }
 
 #[derive(Serialize)]
@@ -75,8 +78,12 @@ pub async fn list(
     let owner = non_empty(query.owner).map(|o| o.to_lowercase());
     let due_from = non_empty(query.due_from);
     let due_to = non_empty(query.due_to);
+    let synced = SyncedSet::new(&state);
     let mut items = Vec::new();
     for row in rows {
+        if query.synced && !synced.contains(&row.id) {
+            continue;
+        }
         let meeting = match MeetingDir::open(&state.config.meetings_dir, &row.id)
             .and_then(|dir| Meeting::load(&dir.path()))
         {

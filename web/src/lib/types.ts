@@ -195,6 +195,23 @@ export interface VaultConfig {
   branch: string;
 }
 
+/** Claude Code (`claude -p`) for synced meetings and cross-meeting questions. */
+export interface ClaudeCodeConfig {
+  enabled: boolean;
+  command: string;
+  /** Working directory of the run, whose CLAUDE.md files and notes it reads. */
+  cwd: string;
+  model?: string;
+  timeout_secs: number;
+}
+
+/** A meeting a cross-meeting answer cites. */
+export interface Citation {
+  id: string;
+  title: string;
+  started: string;
+}
+
 /** `GET /api/config`: the config the daemon is running with. */
 export interface Config {
   meetings_dir: string;
@@ -210,6 +227,7 @@ export interface Config {
   stt: SttConfig;
   port: number;
   vault: VaultConfig;
+  claude_code?: ClaudeCodeConfig;
 }
 
 /** `PUT /api/config` body: any subset, sections may be partial. */

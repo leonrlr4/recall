@@ -1,6 +1,7 @@
 import type {
   ActionItem,
   ActionRow,
+  Citation,
   Config,
   ConfigPatch,
   Hit,
@@ -226,6 +227,60 @@ export async function ask(
   } finally {
     reader.cancel().catch(() => {});
   }
+}
+
+/** The server's text for a cross-meeting question while another runs (409). */
+export const ASK_ALL_BUSY = 'another question is being answered; try again when it is done';
+
+export interface AskAllHandlers {
+  /** A tool call: `search_meetings`, `get_transcript`, `Read`, ... */
+  onTool: (name: string, detail: string | null) => void;
+  /** A piece of the model's text; text before a tool call is not the answer. */
+  onText: (text: string) => void;
+}
+
+/**
+ * Asks Claude Code a question across the synced meetings (`POST
+ * /api/ask`), reporting progress through `handlers`. Resolves with the
+ * final answer and the meetings it cites; rejects with an `ApiError` for a
+ * refused request or an `event: error`.
+ */
+export async function askAll(
+  q: string,
+  handlers: AskAllHandlers,
+  signal?: AbortSignal,
+): Promise<{ text: string; citations: Citation[] }> {
+  const res = await fetch(`${BASE}/ask`, { ...json('POST', { question: q }), signal });
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, errorMessage(await res.text().catch(() => res.statusText)));
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  const parser = parseSse();
+  let answer: { text: string; citations: Citation[] } | null = null;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      for (const msg of parser.push(value)) {
+        if (msg.event === 'error') throw new ApiError(0, msg.data);
+        if (msg.event === 'tool') {
+          const t = JSON.parse(msg.data) as { name: string; detail: string | null };
+          handlers.onTool(t.name, t.detail);
+        } else if (msg.event === 'delta') {
+          handlers.onText(JSON.parse(msg.data) as string);
+        } else if (msg.event === 'answer') {
+          answer = JSON.parse(msg.data) as { text: string; citations: Citation[] };
+        } else if (msg.event === 'done') {
+          if (answer) return answer;
+          throw new ApiError(0, 'no answer');
+        }
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  if (answer) return answer;
+  throw new ApiError(0, 'the answer stream ended early');
 }
 
 /** Subscribes to `/api/events`. Returns a function that closes the stream. */
