@@ -142,6 +142,26 @@ The recording goes through six steps, one meeting at a time:
 A failed step keeps the audio; rerun it from the web page or with
 `recall rerun <id> <step>`.
 
+### Action items
+
+Each action item has an owner, a due date, a priority and the moment in the
+meeting it came from. The summary prompt carries the meeting's date, and
+recall also resolves common relative dates itself (`明天`, `下週三`,
+`next Friday`, `11/3`), so due dates are `YYYY-MM-DD` where they can be;
+anything vaguer ("next sprint") keeps its wording. The To-do page lists the
+items of every meeting, your open ones first by due date and priority, with
+a checkbox to mark them done and a link to the moment in the recording.
+Rerunning `summarize` keeps your done marks: each one moves to the new item
+with the most similar text, or stays as it was if none is close.
+
+In `meeting.md` the items are [Obsidian Tasks](https://publish.obsidian.md/tasks/)
+lines, so a vault with the Tasks plugin can query them:
+
+```md
+- [ ] Send the TRL6 report to Arlene 👤 Arlene ⏫ 📅 2026-11-03
+- [x] Update the pricing page 👤 Leon 🔼 ✅ 2026-11-01
+```
+
 ## Where files live
 
 Each meeting is a folder under `~/Meetings/`, named by start time and title:
@@ -403,8 +423,8 @@ Tools:
   and chapters.
 - `get_transcript`: a meeting's transcript, about 20,000 tokens per call,
   with a cursor for the next page and an optional time range.
-- `list_action_items`: action items across meetings, by owner, due date and
-  meeting date.
+- `list_action_items`: action items across meetings with priority, source
+  time and done state, by owner, due date, meeting date and open or done.
 - `recording_status`: whether the recorder is idle, armed or recording.
 - `start_recording`, `stop_recording`: as `recall start` and `recall stop`.
 - `rerun_step`: process a meeting again from a step.

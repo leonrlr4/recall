@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ActionCheck from './ActionCheck.svelte';
   import { clock } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Summary } from '../lib/types';
@@ -8,12 +9,15 @@
     pending,
     currentMs,
     onseek,
+    ontoggle,
   }: {
     summary: Summary | null;
     /** True while the summarize step has not finished. */
     pending: boolean;
     currentMs: number;
     onseek: (ms: number) => void;
+    /** Checks off or reopens `summary.actions[index]`. */
+    ontoggle: (index: number, done: boolean) => void;
   } = $props();
 
   // Chapter containing the playhead.
@@ -60,17 +64,23 @@
         <ul class="actions">
           {#each summary.actions as a, i (i)}
             <li>
-              <span class="box" aria-hidden="true"></span>
-              <div>
-                <div>{a.text}</div>
-                {#if a.owner || a.due}
-                  <div class="who">
-                    {#if a.owner}<span>{a.owner}</span>{/if}
-                    {#if a.owner && a.due}<span aria-hidden="true"> · </span>{/if}
-                    {#if a.due}<span>{t('summary.due', { due: a.due })}</span>{/if}
-                  </div>
-                {/if}
-              </div>
+              <ActionCheck
+                item={a}
+                disabled={pending}
+                ontoggle={(done) => ontoggle(i, done)}
+              >
+                {#snippet extra()}
+                  {#if a.source_ms !== null}
+                    <button
+                      class="at mono tnum"
+                      title={t('action.play_from', { time: clock(a.source_ms) })}
+                      onclick={() => onseek(a.source_ms ?? 0)}
+                    >
+                      {clock(a.source_ms)}
+                    </button>
+                  {/if}
+                {/snippet}
+              </ActionCheck>
             </li>
           {/each}
         </ul>
@@ -141,27 +151,20 @@
     line-height: 1.5;
   }
 
-  .actions li {
-    display: grid;
-    grid-template-columns: 16px 1fr;
-    gap: 8px;
-  }
-
   .actions li + li {
     margin-top: 8px;
   }
 
-  .box {
-    width: 14px;
-    height: 14px;
-    margin-top: 4px;
-    border: 1.5px solid var(--border-strong);
-    border-radius: 4px;
+  .at {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font-size: 12px;
   }
 
-  .who {
-    font-size: 13px;
-    color: var(--text-2);
+  .at:hover {
+    text-decoration: underline;
   }
 
   .chapters {

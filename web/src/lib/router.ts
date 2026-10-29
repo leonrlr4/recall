@@ -4,6 +4,7 @@
 export type Route =
   | { name: 'list' }
   | { name: 'meeting'; id: string; t: number | null }
+  | { name: 'todo' }
   | { name: 'people' }
   | { name: 'settings' }
   | { name: 'not_found' };
@@ -11,6 +12,7 @@ export type Route =
 /** Maps a pathname (and optional `?t=<ms>` search string) to a route. */
 export function match(pathname: string, search = ''): Route {
   if (pathname === '/' || pathname === '') return { name: 'list' };
+  if (pathname === '/todo') return { name: 'todo' };
   if (pathname === '/people') return { name: 'people' };
   if (pathname === '/settings') return { name: 'settings' };
   const m = /^\/m\/([^/]+)\/?$/.exec(pathname);

@@ -11,6 +11,7 @@
     audioUrl,
     deleteMeeting,
     getMeeting,
+    patchAction,
     patchMeeting,
     patchPerson,
     people,
@@ -227,6 +228,23 @@
       throw e;
     } finally {
       pending = false;
+    }
+  }
+
+  /** Checks an action item off or reopens it, showing the change at once
+   *  and undoing it if the server refuses. */
+  async function toggleAction(index: number, done: boolean) {
+    const item = detail?.meeting.summary?.actions[index];
+    if (!item) return;
+    const before = { done: item.done, done_at: item.done_at };
+    item.done = done;
+    try {
+      Object.assign(item, await patchAction(id, index, { done, text: item.text }));
+      // meeting.md and the published note changed too.
+      void load(false);
+    } catch (e) {
+      Object.assign(item, before);
+      flash(t('action.save_failed', { error: e instanceof Error ? e.message : String(e) }), 'err');
     }
   }
 
@@ -466,6 +484,7 @@
             cursor = lineAt(ms);
             seek(ms);
           }}
+          ontoggle={toggleAction}
         />
       </aside>
 

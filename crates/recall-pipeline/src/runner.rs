@@ -5,11 +5,12 @@ use std::io::Write as _;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{Local, Utc};
 use recall_llm::{CLAUDE_CODE_BUDGET_CHARS, ClaudeCode, Llm};
 use recall_store::speakers::ME;
 use recall_store::{
-    Config, Index, Meeting, MeetingDir, Side, SpeakerId, Speakers, Step, StepState, read_events,
+    Config, Index, Meeting, MeetingDir, Side, SpeakerId, Speakers, Step, StepState, Summary,
+    read_events,
 };
 use tempfile::NamedTempFile;
 
@@ -20,7 +21,7 @@ use crate::meet_vote::{roster, speaking_intervals, vote};
 use crate::merge::merge_sides;
 use crate::models::{self, ModelId};
 use crate::naming::{apply_names, assign_clusters, name_clusters, name_from_meet};
-use crate::summarize::summarize;
+use crate::summarize::{carry_done, summarize};
 use crate::transcribe::{Track, Transcriber, Utterance, WhisperTranscriber};
 use crate::vad::{Region, SileroVad, Vad, drop_echo, merge_close};
 
@@ -313,9 +314,11 @@ impl Run<'_> {
     /// Summarizes with Claude Code when the meeting is marked for sync and
     /// `claude_code` is enabled, so the summary can draw on the user's work
     /// notes; otherwise, or when that run fails for any reason, with the
-    /// configured backend. `models["llm"]` names whichever wrote it.
+    /// configured backend. `models["llm"]` names whichever wrote it. A
+    /// rerun keeps the user's done marks; see [`carry_done`].
     async fn summarize(&mut self) -> Result<()> {
         let terms = self.glossary().terms().to_vec();
+        let date = self.meeting.started.with_timezone(&Local).date_naive();
         let cc = &self.config.claude_code;
         if self.meeting.sync && cc.enabled {
             let claude = ClaudeCode::from_config(cc);
@@ -325,12 +328,13 @@ impl Run<'_> {
                 self.speakers,
                 &self.config.summary_lang,
                 &terms,
+                date,
                 CLAUDE_CODE_BUDGET_CHARS,
             )
             .await;
             match result {
                 Ok(summary) => {
-                    self.meeting.summary = Some(summary);
+                    self.set_summary(summary);
                     self.meeting.models.insert("llm".into(), claude.name());
                     return Ok(());
                 }
@@ -348,12 +352,21 @@ impl Run<'_> {
             self.speakers,
             &self.config.summary_lang,
             &terms,
+            date,
             self.config.llm.transcript_budget_chars(),
         )
         .await?;
-        self.meeting.summary = Some(summary);
-        self.meeting.models.insert("llm".into(), llm.name());
+        let name = llm.name();
+        self.set_summary(summary);
+        self.meeting.models.insert("llm".into(), name);
         Ok(())
+    }
+
+    fn set_summary(&mut self, mut summary: Summary) {
+        if let Some(old) = &self.meeting.summary {
+            carry_done(&old.actions, &mut summary);
+        }
+        self.meeting.summary = Some(summary);
     }
 
     /// Writes `meeting.md` (through a temporary file and a rename) and

@@ -79,6 +79,9 @@ pub struct ActionArgs {
     /// Items due on or before this date (YYYY-MM-DD); leaves out items
     /// without a due date.
     pub due_to: Option<String>,
+    /// `false` for open items only, `true` for done items only; omit for
+    /// both.
+    pub done: Option<bool>,
 }
 
 /// A processing step, in pipeline order. Rerunning one reruns every step
@@ -138,7 +141,24 @@ pub struct ActionItem {
     pub started: String,
     pub text: String,
     pub owner: Option<String>,
+    /// YYYY-MM-DD when the meeting gave a computable date, otherwise the
+    /// words used.
     pub due: Option<String>,
+    /// `high`, `medium` or `low`.
+    #[serde(default)]
+    pub priority: Option<String>,
+    /// Milliseconds into the meeting where the item came up.
+    #[serde(default)]
+    pub source_ms: Option<u32>,
+    /// The user checked the item off.
+    #[serde(default)]
+    pub done: bool,
+    /// When it was checked off (RFC 3339).
+    #[serde(default)]
+    pub done_at: Option<String>,
+    /// The owner is the user.
+    #[serde(default)]
+    pub mine: bool,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -280,7 +300,7 @@ impl Recall {
     }
 
     /// Action items from every meeting's summary, filtered by owner, due
-    /// date range and meeting date range.
+    /// date range, meeting date range and open or done.
     // The return type is spelled out: `#[tool]` derives `outputSchema` only
     // from a literal `Result<Json<_>, _>`, not from the `ToolResult` alias.
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
@@ -294,6 +314,7 @@ impl Recall {
             ("to", args.to),
             ("due_from", args.due_from),
             ("due_to", args.due_to),
+            ("done", args.done.map(|d| d.to_string())),
         ]
         .into_iter()
         .filter_map(|(k, v)| Some((k, v?)))

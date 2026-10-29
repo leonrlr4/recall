@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use recall_store::markdown::clock;
-use recall_store::{ActionItem, Chapter, Segment, Side, Speakers, Summary};
+use recall_store::{ActionItem, Chapter, Priority, Segment, Side, Speakers, Summary};
 use serde::Deserialize;
 
 /// How much of the raw model output a parse error quotes.
@@ -37,8 +37,11 @@ pub fn summary_prompt(lang: &str) -> String {
          - \"one_line\": string, the meeting in one sentence.\n\
          - \"body\": string, a summary of the discussion in a few short paragraphs.\n\
          - \"decisions\": array of strings, the decisions made.\n\
-         - \"actions\": array of {{\"text\": string, \"owner\": string or null, \"due\": string or null}}, \
-         the follow-up tasks; use null when the transcript names no owner or due date.\n\
+         - \"actions\": array of {{\"text\": string, \"owner\": string or null, \"due\": string or null, \
+         \"priority\": \"high\", \"medium\", \"low\" or null, \"source_ms\": integer or null}}, \
+         the follow-up tasks; use null when the transcript names no owner or due date. \
+         priority is how urgent the meeting made the task sound, null when it gave no sign. \
+         source_ms is the milliseconds from the start of the meeting where the task was raised.\n\
          - \"chapters\": array of {{\"start_ms\": integer, \"title\": string}}, topic changes in order, \
          start_ms being the milliseconds from the start of the meeting where the topic begins.\n\
          \n\
@@ -103,9 +106,47 @@ struct SummaryDto {
     #[serde(default)]
     decisions: Vec<String>,
     #[serde(default)]
-    actions: Vec<ActionItem>,
+    actions: Vec<ActionDto>,
     #[serde(default)]
     chapters: Vec<Chapter>,
+}
+
+/// An action item as the model writes it. `priority` and `source_ms` are
+/// read loosely: a word outside high/medium/low or a non-integer time
+/// drops that field, not the whole summary.
+#[derive(Deserialize)]
+struct ActionDto {
+    text: String,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    due: Option<String>,
+    #[serde(default)]
+    priority: Option<serde_json::Value>,
+    #[serde(default)]
+    source_ms: Option<serde_json::Value>,
+}
+
+impl From<ActionDto> for ActionItem {
+    fn from(dto: ActionDto) -> Self {
+        ActionItem {
+            text: dto.text,
+            owner: dto.owner,
+            due: dto.due,
+            priority: dto
+                .priority
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .and_then(Priority::parse),
+            source_ms: dto
+                .source_ms
+                .as_ref()
+                .and_then(serde_json::Value::as_f64)
+                .filter(|ms| *ms >= 0.0 && *ms <= f64::from(u32::MAX))
+                .map(|ms| ms as u32),
+            ..ActionItem::default()
+        }
+    }
 }
 
 /// Reads the summary JSON out of model output, tolerating a code fence and
@@ -123,7 +164,7 @@ pub fn parse_summary(raw: &str) -> Result<Summary> {
         one_line: dto.one_line,
         body: dto.body,
         decisions: dto.decisions,
-        actions: dto.actions,
+        actions: dto.actions.into_iter().map(ActionItem::from).collect(),
         chapters: dto.chapters,
     })
 }
@@ -156,6 +197,25 @@ mod tests {
 
         let bare = parse_summary(&format!("```\n{JSON}\n```")).unwrap();
         assert_eq!(bare, summary);
+    }
+
+    #[test]
+    fn parse_summary_reads_priority_and_source_loosely() {
+        let raw = r#"{"one_line":"a","body":"b","actions":[
+            {"text":"Send the report","owner":null,"due":"2026-11-03","priority":"High","source_ms":92000},
+            {"text":"Book a room","priority":"urgent","source_ms":"soon"},
+            {"text":"Tidy up","priority":null,"source_ms":1500.7}
+        ]}"#;
+        let actions = parse_summary(raw).unwrap().actions;
+        assert_eq!(actions[0].priority, Some(Priority::High));
+        assert_eq!(actions[0].source_ms, Some(92_000));
+        assert_eq!(actions[0].due.as_deref(), Some("2026-11-03"));
+        assert!(!actions[0].done);
+        assert_eq!(actions[1].priority, None);
+        assert_eq!(actions[1].source_ms, None);
+        assert_eq!(actions[1].owner, None);
+        assert_eq!(actions[2].priority, None);
+        assert_eq!(actions[2].source_ms, Some(1_500));
     }
 
     #[test]
@@ -238,6 +298,8 @@ mod tests {
             "actions",
             "chapters",
             "start_ms",
+            "priority",
+            "source_ms",
         ] {
             assert!(zh.contains(key), "missing {key}");
         }

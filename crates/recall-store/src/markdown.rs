@@ -3,9 +3,9 @@
 
 use std::fmt::Write;
 
-use chrono::SecondsFormat;
+use chrono::{Local, NaiveDate, SecondsFormat};
 
-use crate::meeting::{ActionItem, Meeting, Segment, Side};
+use crate::meeting::{ActionItem, Meeting, Priority, Segment, Side};
 use crate::speakers::Speakers;
 
 struct Labels {
@@ -14,6 +14,8 @@ struct Labels {
     actions: &'static str,
     chapters: &'static str,
     transcript: &'static str,
+    /// Prefix for a due date that is not a calendar date.
+    due: &'static str,
     /// Name for a remote segment no speaker has been assigned to.
     them: &'static str,
 }
@@ -24,6 +26,7 @@ const ZH_TW: Labels = Labels {
     actions: "待辦",
     chapters: "章節",
     transcript: "逐字稿",
+    due: "期限",
     them: "對方",
 };
 
@@ -33,6 +36,7 @@ const EN: Labels = Labels {
     actions: "Action items",
     chapters: "Chapters",
     transcript: "Transcript",
+    due: "due",
     them: "Them",
 };
 
@@ -60,7 +64,7 @@ pub fn render(meeting: &Meeting, speakers: &Speakers, lang: &str) -> String {
         if !summary.actions.is_empty() {
             let _ = write!(out, "\n## {}\n\n", labels.actions);
             for action in &summary.actions {
-                let _ = writeln!(out, "{}", action_line(action));
+                let _ = writeln!(out, "{}", action_line(action, labels));
             }
         }
         if !summary.chapters.is_empty() {
@@ -111,21 +115,51 @@ fn write_frontmatter(out: &mut String, meeting: &Meeting, speakers: &Speakers) {
     );
 }
 
-/// `- [ ] text (owner, due)`, keeping only the parts that are present.
-fn action_line(action: &ActionItem) -> String {
-    let extras: Vec<&str> = [action.owner.as_deref(), action.due.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect();
-    if extras.is_empty() {
-        format!("- [ ] {}", flatten(&action.text))
-    } else {
-        format!(
-            "- [ ] {} ({})",
-            flatten(&action.text),
-            flatten(&extras.join(", "))
-        )
+/// An Obsidian Tasks line: `- [ ] text 👤 owner ⏫ 📅 2026-11-03`, and
+/// `- [x] ... ✅ 2026-11-01` once done, keeping only the parts present.
+///
+/// Tasks reads its emoji fields backwards from the end of the line and
+/// stops at the first text that is not one, so everything that is not a
+/// Tasks field (the owner, a due date that is not a calendar date) goes
+/// before them, in the description. The fields follow the order Tasks
+/// itself writes them in: priority, due, done.
+fn action_line(action: &ActionItem, labels: &Labels) -> String {
+    let mut line = format!(
+        "- [{}] {}",
+        if action.done { 'x' } else { ' ' },
+        flatten(action.text.trim())
+    );
+    if let Some(owner) = action
+        .owner
+        .as_deref()
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+    {
+        let _ = write!(line, " 👤 {}", flatten(owner));
     }
+    let due = action
+        .due
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    let date = due.and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+    if let (Some(due), None) = (due, date) {
+        let _ = write!(line, " ({} {})", labels.due, flatten(due));
+    }
+    if let Some(priority) = action.priority {
+        line.push_str(match priority {
+            Priority::High => " ⏫",
+            Priority::Medium => " 🔼",
+            Priority::Low => " 🔽",
+        });
+    }
+    if let Some(date) = date {
+        let _ = write!(line, " 📅 {date}");
+    }
+    if let (true, Some(at)) = (action.done, action.done_at) {
+        let _ = write!(line, " ✅ {}", at.with_timezone(&Local).date_naive());
+    }
+    line
 }
 
 /// The display name for a segment: its assigned speaker, else `me` for the
@@ -192,7 +226,9 @@ fn yaml_scalar(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::meeting::{ActionItem, Chapter, MeetingId, Segment, Side, SpeakerId, Summary};
+    use crate::meeting::{
+        ActionItem, Chapter, MeetingId, Priority, Segment, Side, SpeakerId, Summary,
+    };
     use chrono::{TimeZone, Utc};
     use std::collections::BTreeMap;
 
@@ -239,21 +275,24 @@ mod tests {
                         text: "寫 release notes".into(),
                         owner: Some("Leon".into()),
                         due: Some("2026-10-30".into()),
+                        priority: Some(Priority::High),
+                        ..ActionItem::default()
                     },
                     ActionItem {
                         text: "修 export".into(),
                         owner: Some("Tom".into()),
-                        due: None,
+                        priority: Some(Priority::Low),
+                        ..ActionItem::default()
                     },
                     ActionItem {
                         text: "看 log".into(),
-                        owner: None,
-                        due: Some("Friday".into()),
+                        due: Some("下週".into()),
+                        priority: Some(Priority::Medium),
+                        ..ActionItem::default()
                     },
                     ActionItem {
                         text: "整理".into(),
-                        owner: None,
-                        due: None,
+                        ..ActionItem::default()
                     },
                 ],
                 chapters: vec![Chapter {
@@ -296,9 +335,9 @@ tags: []
 
 ## 待辦
 
-- [ ] 寫 release notes (Leon, 2026-10-30)
-- [ ] 修 export (Tom)
-- [ ] 看 log (Friday)
+- [ ] 寫 release notes 👤 Leon ⏫ 📅 2026-10-30
+- [ ] 修 export 👤 Tom 🔽
+- [ ] 看 log (期限 下週) 🔼
 - [ ] 整理
 
 ## 章節
@@ -345,6 +384,34 @@ tags: []
         ] {
             assert!(md.contains(line), "missing {line:?} in {md}");
         }
+    }
+
+    #[test]
+    fn done_action_is_a_checked_task_with_done_date() {
+        let at = Utc.with_ymd_and_hms(2026, 11, 1, 4, 0, 0).unwrap();
+        let action = ActionItem {
+            text: "寄 TRL6 報告給 Arlene".into(),
+            owner: Some("Arlene".into()),
+            due: Some("2026-11-03".into()),
+            priority: Some(Priority::High),
+            done: true,
+            done_at: Some(at),
+            ..ActionItem::default()
+        };
+        let done = at.with_timezone(&Local).date_naive();
+        assert_eq!(
+            action_line(&action, &ZH_TW),
+            format!("- [x] 寄 TRL6 報告給 Arlene 👤 Arlene ⏫ 📅 2026-11-03 ✅ {done}")
+        );
+        let open = ActionItem {
+            due: Some("next sprint".into()),
+            done: false,
+            ..action
+        };
+        assert_eq!(
+            action_line(&open, &EN),
+            "- [ ] 寄 TRL6 報告給 Arlene 👤 Arlene (due next sprint) ⏫"
+        );
     }
 
     #[test]

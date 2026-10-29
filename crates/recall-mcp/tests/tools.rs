@@ -12,8 +12,8 @@ use recall_mcp::{PAGE_TOKENS, Recall, Url};
 use recall_server::{AppState, ControlCommand, SelfTestResult, StatusSnapshot, build_router};
 use recall_store::markdown::clock;
 use recall_store::{
-    ActionItem, Config, Index, Meeting, MeetingDir, MeetingId, Segment, Side, SpeakerId, Speakers,
-    Step, StepState, Summary,
+    ActionItem, Config, Index, Meeting, MeetingDir, MeetingId, Priority, Segment, Side, SpeakerId,
+    Speakers, Step, StepState, Summary,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -155,11 +155,17 @@ async fn harness() -> Harness {
                 text: "Ship the release".into(),
                 owner: Some("Alice".into()),
                 due: Some("2026-11-01".into()),
+                priority: Some(Priority::High),
+                source_ms: Some(3_000),
+                ..ActionItem::default()
             },
             ActionItem {
                 text: "Write the notes".into(),
                 owner: Some("Bob".into()),
                 due: None,
+                done: true,
+                done_at: Some(Utc.with_ymd_and_hms(2026, 10, 28, 2, 0, 0).unwrap()),
+                ..ActionItem::default()
             },
         ],
         chapters: Vec::new(),
@@ -415,6 +421,11 @@ async fn action_items_structured() {
                 "text": "Ship the release",
                 "owner": "Alice",
                 "due": "2026-11-01",
+                "priority": "high",
+                "source_ms": 3000,
+                "done": false,
+                "done_at": null,
+                "mine": false,
             }]
         }))
     );
@@ -430,6 +441,16 @@ async fn action_items_structured() {
     )
     .await;
     assert_eq!(result.structured_content, Some(json!({ "items": [] })));
+
+    let result = call(&h.client, "list_action_items", json!({ "done": true })).await;
+    let items = &result.structured_content.unwrap()["items"];
+    assert_eq!(items.as_array().unwrap().len(), 1);
+    assert_eq!(items[0]["text"], "Write the notes");
+    assert_eq!(items[0]["done_at"], "2026-10-28T02:00:00Z");
+    let result = call(&h.client, "list_action_items", json!({ "done": false })).await;
+    let items = &result.structured_content.unwrap()["items"];
+    assert_eq!(items[0]["text"], "Ship the release");
+    assert_eq!(items.as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]

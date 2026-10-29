@@ -2,6 +2,7 @@
   "nav": {
     "label": "主選單",
     "meetings": "會議",
+    "todo": "待辦",
     "people": "人員",
     "settings": "設定"
   },
@@ -103,12 +104,41 @@
     "screen_error": "螢幕錄影失敗：{error}",
     "delete_confirm_vault": "要刪除「{title}」以及它的錄音和逐字稿嗎？它在團隊 vault 的筆記也會移除，但仍留在 vault 的 git 歷史裡。刪除後無法復原。"
   },
+  "todo": {
+    "title": "待辦",
+    "intro": "所有會議摘要裡的待辦事項。在這裡勾選完成，會議筆記也會跟著更新。",
+    "filters": "篩選",
+    "owner": "負責人",
+    "owner_me": "我",
+    "owner_all": "所有人",
+    "status": "顯示",
+    "status_open": "未完成",
+    "status_done": "已完成",
+    "status_all": "全部",
+    "meeting": "會議",
+    "meeting_all": "所有會議",
+    "count": "{n} 項",
+    "count_one": "1 項",
+    "none_yet": "還沒有待辦事項。會議摘要列出後續工作時，會出現在這裡。",
+    "no_results": "沒有符合篩選條件的待辦事項。",
+    "load_failed": "無法載入待辦事項：{error}"
+  },
+  "action": {
+    "high": "高",
+    "medium": "中",
+    "low": "低",
+    "due": "期限 {due}",
+    "overdue": "已逾期 {due}",
+    "unassigned": "未指定負責人",
+    "mark_done": "將「{text}」標為完成",
+    "play_from": "從 {time} 播放",
+    "save_failed": "無法更新待辦事項：{error}"
+  },
   "summary": {
     "title": "摘要",
     "decisions": "決議",
     "actions": "待辦事項",
     "chapters": "章節",
-    "due": "期限 {due}",
     "pending": "處理完成後會顯示摘要。",
     "none": "這場會議沒有摘要。"
   },
