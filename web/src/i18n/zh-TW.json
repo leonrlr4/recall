@@ -100,7 +100,8 @@
     "delete_failed": "無法刪除：{error}",
     "save_failed": "無法儲存：{error}",
     "load_failed": "無法載入這場會議：{error}",
-    "screen_error": "螢幕錄影失敗：{error}"
+    "screen_error": "螢幕錄影失敗：{error}",
+    "delete_confirm_vault": "要刪除「{title}」以及它的錄音和逐字稿嗎？它在團隊 vault 的筆記也會移除，但仍留在 vault 的 git 歷史裡。刪除後無法復原。"
   },
   "summary": {
     "title": "摘要",
@@ -171,6 +172,19 @@
     "empty_title": "還沒有其他人",
     "empty_body": "recall 在會議中聽到某人、你在逐字稿裡替他命名之後，他就會出現在這裡。"
   },
+  "vault": {
+    "label": "發布到 vault",
+    "help_off": "把摘要和逐字稿（不含錄音）放進團隊 vault，團隊成員都讀得到。",
+    "help_on": "團隊成員可以在團隊 vault 讀到摘要和逐字稿。關掉會移除筆記，但它仍留在 vault 的 git 歷史裡。",
+    "waiting": "處理完成後發布。",
+    "syncing": "發布中…",
+    "synced": "已在 vault，最後更新於 {time}。",
+    "removing": "正在從 vault 移除筆記…",
+    "failed": "發布失敗：{error}。recall 會自動重試。",
+    "remove_failed": "無法從 vault 移除筆記：{error}。recall 會自動重試。",
+    "off_confirm": "要從團隊 vault 移除這場會議的筆記嗎？筆記仍留在 vault 的 git 歷史裡，團隊成員還是找得到舊版本。",
+    "save_failed": "無法變更發布設定：{error}"
+  },
   "settings": {
     "title": "設定",
     "load_failed": "無法載入設定：{error}",
@@ -184,7 +198,8 @@
       "transcription": "語音轉文字",
       "summary": "摘要",
       "interface": "介面",
-      "server": "伺服器"
+      "server": "伺服器",
+      "vault": "團隊 vault"
     },
     "meetings_dir": "會議資料夾",
     "meetings_dir_help": "絕對路徑。每場會議會在這裡建立一個資料夾，存放錄音、逐字稿和筆記。",
@@ -242,6 +257,14 @@
       "sys_silent": "沒有錄到系統音訊。請確認當時有在播放聲音，並且 recall 能讀取輸出監聽來源。",
       "mic_silent": "麥克風沒有聲音。請檢查輸入裝置，並確認沒有靜音。",
       "both_silent": "兩個音軌都沒有聲音。請檢查麥克風，並確認當時有在播放聲音。"
-    }
+    },
+    "vault_remote": "Vault repository",
+    "vault_remote_help": "vault 的 git 網址，例如 https://github.com/org/vault。recall 以 gh CLI 登入的帳號推送。留空就不發布。",
+    "vault_folder": "資料夾",
+    "vault_folder_help": "vault 裡放會議筆記的資料夾。recall 不會寫入資料夾以外的地方。",
+    "vault_branch": "分支",
+    "vault_branch_help": "recall 把會議筆記提交到這個分支並推送。",
+    "err_folder": "請輸入 vault 裡的資料夾，例如 meetings。",
+    "err_branch": "請輸入分支名稱。"
   }
 }

@@ -62,11 +62,12 @@ const STT_ENGINES: [&str; 1] = ["breeze"];
 const OPTIONAL_KEYS: [&str; 1] = ["ui_lang"];
 
 /// Merges the body, which may hold any subset of the config's keys (nested
-/// `llm`/`stt` too), onto the config file on disk and writes the result back
-/// as TOML, through a temporary file and a rename so a crash never leaves a
-/// half-written file. Unknown keys, a zero port, relative directories and an
-/// unknown `stt.engine` are 400s. The running server keeps its config until
-/// restarted.
+/// `llm`/`stt`/`vault` too), onto the config file on disk and writes the
+/// result back as TOML, through a temporary file and a rename so a crash
+/// never leaves a half-written file. Unknown keys, a zero port, relative
+/// directories, an unknown `stt.engine` and a `vault` section that fails
+/// [`recall_store::config::VaultConfig::validate`] are 400s. The running
+/// server keeps its config until restarted.
 pub async fn put_config(
     State(state): State<AppState>,
     Json(body): Json<Value>,
@@ -108,6 +109,7 @@ pub async fn put_config(
             )));
         }
     }
+    config.vault.validate().map_err(ApiError::bad_request)?;
     let text = toml::to_string_pretty(&config).context("encoding config as TOML")?;
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,

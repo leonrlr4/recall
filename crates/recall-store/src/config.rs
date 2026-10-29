@@ -26,6 +26,7 @@ pub struct Config {
     pub stt: SttConfig,
     pub port: u16,
     pub claude_code: ClaudeCodeConfig,
+    pub vault: VaultConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -69,6 +70,24 @@ pub struct SttConfig {
     pub threads: usize,
 }
 
+/// Where chosen meetings are published: a git repository holding an Obsidian
+/// vault that teammates read.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VaultConfig {
+    /// The vault's git remote, e.g. `https://github.com/org/vault`. Empty
+    /// turns publishing off and hides the switch in the UI.
+    pub remote: String,
+    /// recall's own clone of the vault. Empty means `<data_dir>/vault`; a
+    /// leading `~` is the home directory. See [`Config::vault_dir`].
+    pub dir: PathBuf,
+    /// Folder inside the vault that holds the published notes. recall
+    /// writes nothing outside it.
+    pub folder: String,
+    /// Branch to commit to and push.
+    pub branch: String,
+}
+
 /// Environment variable naming the config file, overriding [`Config::path`].
 const CONFIG_ENV: &str = "RECALL_CONFIG";
 /// Environment variable giving the default `data_dir`.
@@ -93,6 +112,7 @@ impl Default for Config {
             stt: SttConfig::default(),
             port: 7474,
             claude_code: ClaudeCodeConfig::default(),
+            vault: VaultConfig::default(),
         }
     }
 }
@@ -149,6 +169,63 @@ impl Default for SttConfig {
     }
 }
 
+impl Default for VaultConfig {
+    fn default() -> Self {
+        Self {
+            remote: String::new(),
+            dir: PathBuf::new(),
+            folder: "meetings".into(),
+            branch: "main".into(),
+        }
+    }
+}
+
+impl VaultConfig {
+    /// Publishing is on when a remote is set.
+    pub fn enabled(&self) -> bool {
+        !self.remote.trim().is_empty()
+    }
+
+    /// The folder without leading or trailing slashes.
+    pub fn folder(&self) -> &str {
+        self.folder.trim_matches('/')
+    }
+
+    /// Checks what the vault sync relies on: `folder` is a relative path
+    /// with no empty, `.` or `..` parts (so writes stay inside it), `branch`
+    /// names a branch, and `dir` is empty, absolute or starts with `~/`.
+    /// The error names the key.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let folder = self.folder();
+        if folder.is_empty()
+            || self.folder.starts_with('/')
+            || folder.contains('\\')
+            || folder
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(format!(
+                "vault.folder must be a relative folder such as \"meetings\", got {:?}",
+                self.folder
+            ));
+        }
+        if self.branch.trim().is_empty() || self.branch.starts_with('-') {
+            return Err(format!(
+                "vault.branch must name a branch, got {:?}",
+                self.branch
+            ));
+        }
+        if !self.dir.as_os_str().is_empty() && !self.dir.is_absolute() && !self.dir.starts_with("~")
+        {
+            return Err(format!(
+                "vault.dir must be an absolute path or start with ~/, got {}",
+                self.dir.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Config {
     /// Loads the config from [`Config::path`].
     pub fn load() -> Result<Self> {
@@ -181,6 +258,24 @@ impl Config {
 
     pub fn models_dir(&self) -> PathBuf {
         self.data_dir.join("models")
+    }
+
+    /// The vault clone: `vault.dir` with `~` expanded, or `<data_dir>/vault`
+    /// when it is empty.
+    pub fn vault_dir(&self) -> PathBuf {
+        let dir = &self.vault.dir;
+        if dir.as_os_str().is_empty() {
+            return self.data_dir.join("vault");
+        }
+        match dir.strip_prefix("~") {
+            Ok(rest) => home().join(rest),
+            Err(_) => dir.clone(),
+        }
+    }
+
+    /// What the vault sync last published for each meeting.
+    pub fn vault_state_path(&self) -> PathBuf {
+        self.data_dir.join("vault.json")
     }
 }
 
@@ -298,5 +393,46 @@ mod tests {
         assert_eq!(config.speakers_path(), PathBuf::from("/data/speakers.json"));
         assert_eq!(config.index_path(), PathBuf::from("/data/index.sqlite"));
         assert_eq!(config.models_dir(), PathBuf::from("/data/models"));
+        assert_eq!(config.vault_dir(), PathBuf::from("/data/vault"));
+        assert_eq!(config.vault_state_path(), PathBuf::from("/data/vault.json"));
+    }
+
+    #[test]
+    fn vault_is_off_by_default_and_dir_expands_tilde() {
+        let mut config = Config::default();
+        assert!(!config.vault.enabled());
+        assert_eq!(config.vault.folder, "meetings");
+        assert_eq!(config.vault.branch, "main");
+        config.vault.dir = PathBuf::from("~/vault");
+        assert_eq!(config.vault_dir(), home().join("vault"));
+        config.vault.dir = PathBuf::from("/srv/vault");
+        assert_eq!(config.vault_dir(), PathBuf::from("/srv/vault"));
+    }
+
+    #[test]
+    fn vault_validate_keeps_writes_inside_the_folder() {
+        let ok = |folder: &str| {
+            VaultConfig {
+                folder: folder.into(),
+                ..VaultConfig::default()
+            }
+            .validate()
+            .is_ok()
+        };
+        assert!(ok("meetings"));
+        assert!(ok("notes/meetings/"));
+        for bad in ["", "/", "/abs", "../up", "a/../b", "a//b", "./a", "a\\b"] {
+            assert!(!ok(bad), "{bad:?}");
+        }
+        let relative_dir = VaultConfig {
+            dir: PathBuf::from("vault"),
+            ..VaultConfig::default()
+        };
+        assert!(relative_dir.validate().unwrap_err().contains("vault.dir"));
+        let no_branch = VaultConfig {
+            branch: " ".into(),
+            ..VaultConfig::default()
+        };
+        assert!(no_branch.validate().unwrap_err().contains("vault.branch"));
     }
 }

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { applyPatch, askErrorKey, configDiff, fieldOfError, mergePatch, selftestVerdict, uiLangOf } from './settings';
+import {
+  applyPatch,
+  askErrorKey,
+  configDiff,
+  fieldOfError,
+  mergePatch,
+  selftestVerdict,
+  uiLangOf,
+  vaultFolderOk,
+} from './settings';
 import type { Config } from './types';
 
 const base: Config = {
@@ -13,6 +22,7 @@ const base: Config = {
   summary_lang: 'zh-TW',
   stt: { engine: 'breeze', threads: 8 },
   port: 7474,
+  vault: { remote: '', dir: '', folder: 'meetings', branch: 'main' },
 };
 
 const clone = (c: Config): Config => structuredClone(c);
@@ -103,6 +113,26 @@ describe('applyPatch', () => {
     expect(
       mergePatch({ port: 1, llm: { model: 'a' } }, { llm: { endpoint: 'e' }, port: 2 }),
     ).toEqual({ port: 2, llm: { model: 'a', endpoint: 'e' } });
+  });
+
+  it('vault_section_diffs_and_merges_key_by_key', () => {
+    const remote = 'https://github.com/org/vault';
+    const next = clone(base);
+    next.vault.remote = remote;
+    const patch = configDiff(base, next);
+    expect(patch).toEqual({ vault: { remote } });
+    expect(applyPatch(base, patch).vault).toEqual({ ...base.vault, remote });
+    expect(mergePatch(patch, { vault: { branch: 'dev' } })).toEqual({
+      vault: { remote, branch: 'dev' },
+    });
+  });
+
+  it('vault_folder_ok_keeps_writes_inside_the_folder', () => {
+    expect(vaultFolderOk('meetings')).toBe(true);
+    expect(vaultFolderOk('notes/meetings/')).toBe(true);
+    for (const bad of ['', '/', '/abs', '../up', 'a/../b', 'a//b', './a', 'a\\b']) {
+      expect(vaultFolderOk(bad), bad).toBe(false);
+    }
   });
 
   it('diff_of_applied_patch_round_trips', () => {

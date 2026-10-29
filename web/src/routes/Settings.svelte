@@ -16,6 +16,7 @@
     SUMMARY_LANGS,
     UI_LANGS,
     uiLangOf,
+    vaultFolderOk,
     type Field,
     type UiLang,
     type Verdict,
@@ -75,6 +76,10 @@
     if (!isInt(form.port, 1, 65535)) out.port = t('settings.err_port');
     for (const f of ['meetings_dir', 'data_dir'] as const) {
       if (!form[f].startsWith('/')) out[f] = t('settings.err_absolute');
+    }
+    if (!vaultFolderOk(form.vault.folder)) out['vault.folder'] = t('settings.err_folder');
+    if (!form.vault.branch.trim() || form.vault.branch.startsWith('-')) {
+      out['vault.branch'] = t('settings.err_branch');
     }
     return out;
   });
@@ -310,6 +315,27 @@
             {/each}
           </select>
           {@render below('ui_lang', t('settings.ui_lang_help'))}
+        </div>
+      </section>
+
+      <section class="panel group" aria-labelledby="g-vault">
+        <h2 id="g-vault">{t('settings.group.vault')}</h2>
+        <div class="field">
+          <label for={id('vault.remote')}>{t('settings.vault_remote')}</label>
+          <input id={id('vault.remote')} class="input mono" bind:value={form.vault.remote} placeholder="https://github.com/org/vault" aria-invalid={!!errors['vault.remote']} aria-describedby={describedby('vault.remote')} spellcheck="false" />
+          {@render below('vault.remote', t('settings.vault_remote_help'))}
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for={id('vault.folder')}>{t('settings.vault_folder')}</label>
+            <input id={id('vault.folder')} class="input mono" bind:value={form.vault.folder} aria-invalid={!!errors['vault.folder']} aria-describedby={describedby('vault.folder')} spellcheck="false" />
+            {@render below('vault.folder', t('settings.vault_folder_help'))}
+          </div>
+          <div class="field">
+            <label for={id('vault.branch')}>{t('settings.vault_branch')}</label>
+            <input id={id('vault.branch')} class="input mono" bind:value={form.vault.branch} aria-invalid={!!errors['vault.branch']} aria-describedby={describedby('vault.branch')} spellcheck="false" />
+            {@render below('vault.branch', t('settings.vault_branch_help'))}
+          </div>
         </div>
       </section>
 

@@ -100,7 +100,8 @@
     "delete_failed": "Could not delete: {error}",
     "save_failed": "Could not save: {error}",
     "load_failed": "Could not load this meeting: {error}",
-    "screen_error": "Screen recording failed: {error}"
+    "screen_error": "Screen recording failed: {error}",
+    "delete_confirm_vault": "Delete “{title}” with its audio and transcript? Its note is also removed from the team vault, but stays in the vault's git history. This cannot be undone."
   },
   "summary": {
     "title": "Summary",
@@ -171,6 +172,19 @@
     "empty_title": "Nobody else yet",
     "empty_body": "People appear here after recall hears them in a meeting and you name them in the transcript."
   },
+  "vault": {
+    "label": "Publish to vault",
+    "help_off": "Puts the summary and transcript (no audio) in the team vault, where teammates can read them.",
+    "help_on": "Teammates can read the summary and transcript in the team vault. Turning this off removes the note, but it stays in the vault's git history.",
+    "waiting": "Publishes when processing finishes.",
+    "syncing": "Publishing…",
+    "synced": "In the vault, last updated {time}.",
+    "removing": "Removing the note from the vault…",
+    "failed": "Could not publish: {error}. recall tries again on its own.",
+    "remove_failed": "Could not remove the note from the vault: {error}. recall tries again on its own.",
+    "off_confirm": "Remove this meeting's note from the team vault? It stays in the vault's git history, so teammates can still find earlier versions.",
+    "save_failed": "Could not change publishing: {error}"
+  },
   "settings": {
     "title": "Settings",
     "load_failed": "Could not load settings: {error}",
@@ -184,7 +198,8 @@
       "transcription": "Transcription",
       "summary": "Summary",
       "interface": "Interface",
-      "server": "Server"
+      "server": "Server",
+      "vault": "Team vault"
     },
     "meetings_dir": "Meetings folder",
     "meetings_dir_help": "Absolute path where each meeting gets its own folder with audio, transcript and notes.",
@@ -242,6 +257,14 @@
       "sys_silent": "No system audio captured. Check that something was playing and that recall can read the output monitor.",
       "mic_silent": "The microphone is silent. Check the input device and that it is not muted.",
       "both_silent": "Both tracks are silent. Check the microphone and that something was playing."
-    }
+    },
+    "vault_remote": "Vault repository",
+    "vault_remote_help": "The vault's git URL, such as https://github.com/org/vault. recall pushes as the account the gh CLI is logged in to. Leave empty to turn publishing off.",
+    "vault_folder": "Folder",
+    "vault_folder_help": "Folder in the vault for meeting notes. recall writes nothing outside it.",
+    "vault_branch": "Branch",
+    "vault_branch_help": "recall commits meeting notes to this branch and pushes it.",
+    "err_folder": "Enter a folder inside the vault, such as meetings.",
+    "err_branch": "Enter a branch name."
   }
 }

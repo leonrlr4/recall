@@ -76,6 +76,50 @@ pub type RerunFn = dyn Fn(&MeetingId, Step) -> anyhow::Result<i64> + Send + Sync
 /// returns how many it stored.
 pub type MeetSinkFn = dyn Fn(MeetBatch) -> anyhow::Result<usize> + Send + Sync;
 
+/// How soon the vault sync should look at a meeting after a change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncWhen {
+    /// The switch was flipped or the meeting deleted: right away.
+    Now,
+    /// An edit: after a quiet spell, so a burst of edits is one commit.
+    Debounced,
+}
+
+/// Where a meeting stands with the shared vault, as `GET
+/// /api/meetings/{id}` reports it under `vault`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct VaultStatus {
+    /// The switch value asked for while a job was processing the meeting;
+    /// it is written to `meeting.json` when the job ends.
+    pub requested: Option<bool>,
+    /// A change is waiting to be pushed or is being pushed.
+    pub queued: bool,
+    /// The note's path in the vault as last pushed; `None` when it is not
+    /// in the vault.
+    pub path: Option<String>,
+    pub synced_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Why the last attempt failed; cleared by the next success. A failed
+    /// change is retried with backoff.
+    pub error: Option<String>,
+}
+
+/// The daemon's vault sync, as the handlers see it. Every method returns
+/// at once; the git work runs on the sync's own thread.
+pub trait Vault: Send + Sync {
+    /// Schedules a look at the meeting: publish, update, move or remove its
+    /// note to match `meeting.json`.
+    fn touch(&self, id: &MeetingId, when: SyncWhen);
+    /// The meeting's directory was renamed from `from` to `to`. Call it
+    /// while still holding the `speakers` lock taken for the rename, so the
+    /// sync never sees the new directory under the old state.
+    fn renamed(&self, from: &MeetingId, to: &MeetingId);
+    /// Records the switch value for a meeting a job is processing: the job
+    /// saves its own copy of `meeting.json` and would undo a direct write.
+    /// `None` clears it.
+    fn request(&self, id: &MeetingId, sync: Option<bool>);
+    fn status(&self, id: &MeetingId) -> VaultStatus;
+}
+
 /// The Meet extension's origin. Its id is pinned by the `key` in its
 /// manifest, so it is the same on every machine.
 pub const EXTENSION_ORIGIN: &str = "chrome-extension://oiejafpeoacoblcpomkoloaibfmdfnhd";
@@ -102,6 +146,8 @@ pub struct AppState {
     pub selftest: Arc<SelfTestFn>,
     pub rerun: Arc<RerunFn>,
     pub meet: Arc<MeetSinkFn>,
+    /// `None` when `vault.remote` is empty: publishing is off.
+    pub vault: Option<Arc<dyn Vault>>,
 }
 
 pub fn build_router(state: AppState) -> Router {

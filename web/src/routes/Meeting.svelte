@@ -5,6 +5,7 @@
   import StateChip from '../components/StateChip.svelte';
   import Summary from '../components/Summary.svelte';
   import Transcript from '../components/Transcript.svelte';
+  import VaultSwitch from '../components/VaultSwitch.svelte';
   import Waveform from '../components/Waveform.svelte';
   import {
     audioUrl,
@@ -24,6 +25,7 @@
   import { link, meetingPath, navigate } from '../lib/router';
   import { shiftAfterDelete } from '../lib/transcript';
   import { STEPS, type MeetingDetail, type Person, type Segment, type Step } from '../lib/types';
+  import { syncOn, vaultBusy, vaultState } from '../lib/vault';
 
   let { id, startMs = null }: { id: string; startMs?: number | null } = $props();
 
@@ -218,6 +220,8 @@
     pending = true;
     try {
       detail.meeting = await patchMeeting(id, body);
+      // The edit queues an update of the published note; show it.
+      if (vaultOn) void load(false);
     } catch (e) {
       flash(t('meeting.save_failed', { error: e instanceof Error ? e.message : String(e) }), 'err');
       throw e;
@@ -293,8 +297,24 @@
     }
   }
 
+  /** A publish switch PATCH is in flight. */
+  let syncSaving = $state(false);
+
+  async function setSync(on: boolean) {
+    syncSaving = true;
+    try {
+      await patchMeeting(id, { sync: on });
+      await load(false);
+    } catch (e) {
+      flash(t('vault.save_failed', { error: e instanceof Error ? e.message : String(e) }), 'err');
+    } finally {
+      syncSaving = false;
+    }
+  }
+
   async function doDelete() {
-    if (!meeting || !confirm(t('meeting.delete_confirm', { title: meeting.title }))) return;
+    const key = detail?.vault?.path ? 'meeting.delete_confirm_vault' : 'meeting.delete_confirm';
+    if (!meeting || !confirm(t(key, { title: meeting.title }))) return;
     try {
       await deleteMeeting(id);
       navigate('/', { replace: true });
@@ -351,6 +371,22 @@
     progress ? `processing:${progress.step}` : meeting ? stateOfSteps(meeting.steps) : 'done',
   );
   const summarizing = $derived(meetingState !== 'done' && !meetingState.startsWith('failed'));
+
+  const vault = $derived(detail?.vault ?? null);
+  const vaultOn = $derived(vault && meeting ? syncOn(meeting.sync, vault) : false);
+  const vaultNow = $derived(vault ? vaultState(vaultOn, meetingState, vault) : 'off');
+  // The push runs on the daemon's own schedule and sends no event; poll
+  // while it is on its way, and now and then while it waits for a retry.
+  $effect(() => {
+    if (!vaultBusy(vaultNow) && vaultNow !== 'failed') return;
+    const timer = setInterval(
+      () => {
+        if (!pending && !syncSaving) void load(false);
+      },
+      vaultNow === 'failed' ? 30_000 : 3_000,
+    );
+    return () => clearInterval(timer);
+  });
 </script>
 
 <svelte:window onkeydown={keydown} />
@@ -479,6 +515,15 @@
       </div>
 
       <aside class="right">
+        {#if vault}
+          <VaultSwitch
+            on={vaultOn}
+            processing={meetingState}
+            status={vault}
+            busy={syncSaving}
+            onchange={setSync}
+          />
+        {/if}
         <section class="panel player">
           <Waveform
             src={audioUrl(id)}

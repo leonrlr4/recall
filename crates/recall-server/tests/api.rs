@@ -13,7 +13,10 @@ use async_trait::async_trait;
 use chrono::{Local, TimeZone, Utc};
 use futures_util::StreamExt;
 use recall_llm::Llm;
-use recall_server::{AppState, EXTENSION_ORIGIN, SelfTestResult, StatusSnapshot, build_router};
+use recall_server::{
+    AppState, EXTENSION_ORIGIN, SelfTestResult, StatusSnapshot, SyncWhen, Vault, VaultStatus,
+    build_router,
+};
 use recall_store::{
     ActionItem, Config, Event, Index, MeetBatch, Meeting, MeetingDir, MeetingId, Segment, Side,
     SpeakerId, Speakers, Step, StepState, Summary, markdown,
@@ -42,6 +45,50 @@ impl Llm for FakeLlm {
     }
 }
 
+/// Records what the handlers tell the vault sync, and reports the last
+/// request as the status.
+#[derive(Default)]
+struct FakeVault {
+    calls: Mutex<Vec<String>>,
+    requested: Mutex<BTreeMap<MeetingId, bool>>,
+}
+
+impl Vault for FakeVault {
+    fn touch(&self, id: &MeetingId, when: SyncWhen) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("touch {} {when:?}", id.0));
+    }
+
+    fn renamed(&self, from: &MeetingId, to: &MeetingId) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("renamed {} -> {}", from.0, to.0));
+    }
+
+    fn request(&self, id: &MeetingId, sync: Option<bool>) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("request {} {sync:?}", id.0));
+        let mut requested = self.requested.lock().unwrap();
+        match sync {
+            Some(sync) => requested.insert(id.clone(), sync),
+            None => requested.remove(id),
+        };
+    }
+
+    fn status(&self, id: &MeetingId) -> VaultStatus {
+        VaultStatus {
+            requested: self.requested.lock().unwrap().get(id).copied(),
+            path: Some("meetings/note.md".into()),
+            ..VaultStatus::default()
+        }
+    }
+}
+
 struct Harness {
     _tmp: tempfile::TempDir,
     base: String,
@@ -49,6 +96,7 @@ struct Harness {
     state: AppState,
     reruns: Arc<Mutex<Vec<(MeetingId, Step)>>>,
     meet_batches: Arc<Mutex<Vec<MeetBatch>>>,
+    vault: Arc<FakeVault>,
     alice: SpeakerId,
 }
 
@@ -153,6 +201,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
     let meet_batches: Arc<Mutex<Vec<MeetBatch>>> = Arc::default();
     let received = meet_batches.clone();
     let (events, _) = broadcast::channel(16);
+    let vault = Arc::new(FakeVault::default());
     let state = AppState {
         config: config.clone(),
         config_path: tmp.path().join("config.toml"),
@@ -185,6 +234,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
             received.lock().unwrap().push(batch);
             Ok(n)
         }),
+        vault: Some(vault.clone() as Arc<dyn Vault>),
     };
 
     let router = build_router(state.clone());
@@ -197,6 +247,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
         state,
         reruns,
         meet_batches,
+        vault,
         alice,
     }
 }
@@ -733,6 +784,9 @@ async fn config_get_and_put() {
         (json!({ "data_dir": "rel/dir" }), "data_dir"),
         (json!({ "port": "x" }), "invalid config"),
         (json!({ "stt": { "engine": "whisper" } }), "stt.engine"),
+        (json!({ "vault": { "folder": "../x" } }), "vault.folder"),
+        (json!({ "vault": { "dir": "rel" } }), "vault.dir"),
+        (json!({ "vault": { "remot": "x" } }), "vault.remot"),
         (json!([1]), "object"),
     ] {
         let res = put(body.clone()).await.unwrap();
@@ -804,6 +858,118 @@ async fn people_patch_rejects_name_with_merge() {
     assert_eq!(res.status(), 400);
     let saved = Speakers::load(&h.config.speakers_path()).unwrap();
     assert_eq!(saved.name_of(&h.alice), "Alice");
+}
+
+#[tokio::test]
+async fn patch_sync_saves_the_switch_and_tells_the_vault() {
+    let h = harness().await;
+    let url = h.url(&format!("/api/meetings/{}", encode(WEEKLY)));
+    let client = reqwest::Client::new();
+    let res = client
+        .patch(&url)
+        .json(&json!({ "sync": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["sync"], true);
+    assert!(Meeting::load(&h.meeting_path(WEEKLY)).unwrap().sync);
+    assert_eq!(
+        *h.vault.calls.lock().unwrap(),
+        [
+            format!("request {WEEKLY} None"),
+            format!("touch {WEEKLY} Now")
+        ]
+    );
+
+    let detail: Value = reqwest::get(&url).await.unwrap().json().await.unwrap();
+    assert_eq!(detail["vault"]["path"], "meetings/note.md");
+    assert_eq!(detail["vault"]["queued"], false);
+}
+
+#[tokio::test]
+async fn patch_sync_while_processing_is_requested_not_written() {
+    let h = harness().await;
+    h.state
+        .index
+        .lock()
+        .unwrap()
+        .enqueue(&MeetingId(WEEKLY.into()), Step::Summarize)
+        .unwrap();
+    let url = h.url(&format!("/api/meetings/{}", encode(WEEKLY)));
+    let res = reqwest::Client::new()
+        .patch(&url)
+        .json(&json!({ "sync": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["sync"], true);
+    // The job owns meeting.json until it ends.
+    assert!(!Meeting::load(&h.meeting_path(WEEKLY)).unwrap().sync);
+    assert_eq!(
+        *h.vault.calls.lock().unwrap(),
+        [
+            format!("request {WEEKLY} Some(true)"),
+            format!("touch {WEEKLY} Now")
+        ]
+    );
+    let detail: Value = reqwest::get(&url).await.unwrap().json().await.unwrap();
+    assert_eq!(detail["meeting"]["sync"], true);
+    assert_eq!(detail["vault"]["requested"], true);
+}
+
+#[tokio::test]
+async fn edits_rename_and_delete_tell_the_vault() {
+    let h = harness().await;
+    let client = reqwest::Client::new();
+    let res = client
+        .patch(h.url(&format!("/api/meetings/{}", encode(WEEKLY))))
+        .json(&json!({ "title": "Release planning" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let renamed = "2026-10-27 09:00 Release planning";
+    let res = client
+        .delete(h.url(&format!("/api/meetings/{}", encode(REVIEW))))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(
+        *h.vault.calls.lock().unwrap(),
+        [
+            format!("renamed {WEEKLY} -> {renamed}"),
+            format!("touch {renamed} Debounced"),
+            format!("touch {REVIEW} Now"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn patch_sync_is_refused_when_publishing_is_off() {
+    let h = harness().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut config = (*h.config).clone();
+    config.port = addr.port();
+    let state = AppState {
+        config: Arc::new(config),
+        vault: None,
+        ..h.state.clone()
+    };
+    tokio::spawn(async move { axum::serve(listener, build_router(state)).await.unwrap() });
+    let url = format!("http://{addr}/api/meetings/{}", encode(WEEKLY));
+    let res = reqwest::Client::new()
+        .patch(&url)
+        .json(&json!({ "sync": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let detail: Value = reqwest::get(&url).await.unwrap().json().await.unwrap();
+    assert_eq!(detail["vault"], Value::Null);
 }
 
 #[tokio::test]

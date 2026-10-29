@@ -17,8 +17,8 @@ use recall_store::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::AppState;
 use crate::error::{ApiError, ApiResult};
+use crate::{AppState, SyncWhen, VaultStatus};
 
 /// Most transcript hits a search returns.
 const SEARCH_LIMIT: usize = 100;
@@ -159,6 +159,9 @@ pub struct MeetingResponse {
     markdown: String,
     /// `screen.mp4` exists, so `/api/meetings/{id}/screen` can play it.
     has_screen: bool,
+    /// The meeting's place in the shared vault; `null` when publishing is
+    /// off. `meeting.sync` already reflects `vault.requested`.
+    vault: Option<VaultStatus>,
 }
 
 pub async fn get(
@@ -166,7 +169,11 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> ApiResult<Json<MeetingResponse>> {
     let dir = open_dir(&state.config, &id)?;
-    let meeting = load(&dir)?;
+    let mut meeting = load(&dir)?;
+    let vault = state.vault.as_ref().map(|v| v.status(&dir.id));
+    if let Some(requested) = vault.as_ref().and_then(|v| v.requested) {
+        meeting.sync = requested;
+    }
     let speakers = state.speakers.lock().expect("speakers lock poisoned");
     let mut names = BTreeMap::new();
     let me = speakers.me();
@@ -193,6 +200,7 @@ pub async fn get(
         meeting,
         names,
         markdown,
+        vault,
     }))
 }
 
@@ -201,6 +209,8 @@ pub struct PatchMeeting {
     title: Option<String>,
     #[serde(default)]
     segments: Vec<SegmentEdit>,
+    /// Publish the meeting to the shared vault, or take it out.
+    sync: Option<bool>,
 }
 
 /// An edit to `meeting.segments[index]`. Indexes refer to the segments as
@@ -215,8 +225,12 @@ pub struct SegmentEdit {
 }
 
 /// Applies the edits, renames the directory for a new title, then saves
-/// `meeting.json`, rewrites `meeting.md` and the index row. Returns the
-/// meeting, whose `id` changes with the title.
+/// `meeting.json`, rewrites `meeting.md` and the index row, and tells the
+/// vault sync. Returns the meeting, whose `id` changes with the title.
+///
+/// `sync` alone is accepted while a job processes the meeting: it is handed
+/// to the vault sync, which writes it when the job ends, and the returned
+/// meeting shows it already. Title and segment edits are 409 then.
 pub async fn patch(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -226,8 +240,28 @@ pub async fn patch(
     // rewrites meeting files, cannot interleave with this one.
     let speakers = state.speakers.lock().expect("speakers lock poisoned");
     let dir = open_dir(&state.config, &id)?;
-    ensure_idle(&state.index.lock().expect("index lock poisoned"), &dir.id)?;
+    if body.sync.is_some() && state.vault.is_none() {
+        return Err(ApiError::bad_request(
+            "publishing to the vault is off; set vault.remote first",
+        ));
+    }
+    let edits = body.title.is_some() || !body.segments.is_empty();
+    let busy = state
+        .index
+        .lock()
+        .expect("index lock poisoned")
+        .active_job(&dir.id)?
+        .is_some();
+    if busy && edits {
+        return Err(ApiError::conflict("meeting is being processed"));
+    }
     let mut meeting = load(&dir)?;
+    if let (true, Some(sync), Some(vault)) = (busy, body.sync, &state.vault) {
+        vault.request(&dir.id, Some(sync));
+        vault.touch(&dir.id, SyncWhen::Now);
+        meeting.sync = sync;
+        return Ok(Json(meeting));
+    }
 
     let len = meeting.segments.len();
     for edit in &body.segments {
@@ -274,6 +308,9 @@ pub async fn patch(
     if let Some(title) = title {
         meeting.title = title;
     }
+    if let Some(sync) = body.sync {
+        meeting.sync = sync;
+    }
     meeting.save(&dir.path())?;
     let dir = if body.title.is_some() {
         let title = meeting.title.clone();
@@ -291,10 +328,25 @@ pub async fn patch(
         index.remove(&old_id)?;
     }
     refresh(&state.config, &index, &speakers, &meeting, &dir)?;
+    if let Some(vault) = &state.vault {
+        if old_id != dir.id {
+            vault.renamed(&old_id, &dir.id);
+        }
+        if body.sync.is_some() {
+            // A request left from a job that has ended would otherwise be
+            // applied over this newer choice.
+            vault.request(&dir.id, None);
+            vault.touch(&dir.id, SyncWhen::Now);
+        } else {
+            vault.touch(&dir.id, SyncWhen::Debounced);
+        }
+    }
     Ok(Json(meeting))
 }
 
-/// Removes the meeting's directory, audio included, and its index row.
+/// Removes the meeting's directory, audio included, and its index row. A
+/// published note is then removed from the vault (it stays in the vault's
+/// git history).
 pub async fn delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -308,6 +360,9 @@ pub async fn delete(
         .lock()
         .expect("index lock poisoned")
         .remove(&dir.id)?;
+    if let Some(vault) = &state.vault {
+        vault.touch(&dir.id, SyncWhen::Now);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
