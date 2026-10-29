@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::error::ApiResult;
-use crate::meetings::non_empty;
+use crate::meetings::{SyncedSet, non_empty};
 
 #[derive(Deserialize)]
 pub struct ActionQuery {
@@ -21,6 +21,9 @@ pub struct ActionQuery {
     /// correctly. Either bound leaves out items without a due date.
     due_from: Option<String>,
     due_to: Option<String>,
+    /// `true`: only meetings marked for sync.
+    #[serde(default)]
+    synced: bool,
 }
 
 #[derive(Serialize)]
@@ -52,8 +55,12 @@ pub async fn list(
     let owner = non_empty(query.owner).map(|o| o.to_lowercase());
     let due_from = non_empty(query.due_from);
     let due_to = non_empty(query.due_to);
+    let synced = SyncedSet::new(&state);
     let mut items = Vec::new();
     for row in rows {
+        if query.synced && !synced.contains(&row.id) {
+            continue;
+        }
         let meeting = match MeetingDir::open(&state.config.meetings_dir, &row.id)
             .and_then(|dir| Meeting::load(&dir.path()))
         {

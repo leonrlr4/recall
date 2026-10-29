@@ -14,8 +14,8 @@ use chrono::{Local, TimeZone, Utc};
 use futures_util::StreamExt;
 use recall_llm::Llm;
 use recall_server::{
-    AppState, EXTENSION_ORIGIN, SelfTestResult, StatusSnapshot, SyncWhen, Vault, VaultStatus,
-    build_router,
+    AppState, EXTENSION_ORIGIN, QaState, SelfTestResult, StatusSnapshot, SyncWhen, Vault,
+    VaultStatus, build_router,
 };
 use recall_store::{
     ActionItem, Config, Event, Index, MeetBatch, Meeting, MeetingDir, MeetingId, Segment, Side,
@@ -235,6 +235,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
             Ok(n)
         }),
         vault: Some(vault.clone() as Arc<dyn Vault>),
+        qa: QaState::default(),
     };
 
     let router = build_router(state.clone());
@@ -1268,4 +1269,223 @@ async fn action_items_filters_by_owner_and_due() {
         get("?from=2026-10-27T06:00:00Z&to=2026-10-27T07:00:00Z&owner=amy").await,
         ["Update the mockups"]
     );
+}
+
+fn set_sync(h: &Harness, id: &str, sync: bool) {
+    let path = h.meeting_path(id);
+    let mut meeting = Meeting::load(&path).unwrap();
+    meeting.sync = sync;
+    meeting.save(&path).unwrap();
+}
+
+/// A harness whose `[claude_code]` runs a fake `claude` that saves its
+/// arguments (NUL-separated) to `args` and its stdin to `stdin` beside
+/// itself, then runs `body`.
+async fn claude_harness(body: &str, timeout_secs: u64) -> Harness {
+    use std::os::unix::fs::PermissionsExt;
+    let body = body.to_string();
+    harness_with(move |c| {
+        let bin = c.data_dir.parent().unwrap().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let script = bin.join("claude");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > args\n\
+                 cat > stdin\n{body}\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        c.claude_code.enabled = true;
+        c.claude_code.command = script.to_string_lossy().into_owned();
+        c.claude_code.cwd = bin;
+        c.claude_code.timeout_secs = timeout_secs;
+    })
+    .await
+}
+
+fn claude_file(h: &Harness, name: &str) -> Vec<u8> {
+    fs::read(h.config.claude_code.cwd.join(name)).unwrap()
+}
+
+fn claude_args(h: &Harness) -> Vec<String> {
+    claude_file(h, "args")
+        .split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect()
+}
+
+/// `(event, data)` for each message of an SSE body.
+fn sse_messages(body: &str) -> Vec<(String, String)> {
+    body.split("\n\n")
+        .filter(|m| !m.trim().is_empty() && !m.starts_with(':'))
+        .map(|m| {
+            let mut event = "message".to_string();
+            let mut data = Vec::new();
+            for line in m.lines() {
+                if let Some(e) = line.strip_prefix("event: ") {
+                    event = e.to_string();
+                } else if let Some(d) = line.strip_prefix("data: ") {
+                    data.push(d);
+                }
+            }
+            (event, data.join("\n"))
+        })
+        .collect()
+}
+
+async fn ask_all(h: &Harness, question: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(h.url("/api/ask"))
+        .json(&json!({ "question": question }))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn cross_meeting_ask_needs_claude_code() {
+    let h = harness().await;
+    let res = ask_all(&h, "What did we decide?").await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("[claude_code]"));
+}
+
+const AGENT_REPLY: &str = r#"echo '{"type":"system","subtype":"init"}'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__recall__search_meetings","input":{"query":"release"}}]}}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"週五"}}}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"週五發布 [[2026-10-27 09:00 Weekly sync @ 00:03]]，版面 [[2026-10-27 11:00 Design review @ 00:00]] [[2026-01-01 00:00 Made up @ 00:01]]"}'"#;
+
+#[tokio::test]
+async fn cross_meeting_ask_streams_progress_and_cites_only_synced_meetings() {
+    let h = claude_harness(AGENT_REPLY, 60).await;
+    set_sync(&h, WEEKLY, true);
+    let res = ask_all(&h, "  When do we ship?  ").await;
+    assert_eq!(res.status(), 200);
+    let messages = sse_messages(&res.text().await.unwrap());
+    let events: Vec<&str> = messages.iter().map(|(e, _)| e.as_str()).collect();
+    assert_eq!(events, ["tool", "delta", "answer", "done"]);
+    let tool: Value = serde_json::from_str(&messages[0].1).unwrap();
+    assert_eq!(
+        tool,
+        json!({ "name": "search_meetings", "detail": "release" })
+    );
+    assert_eq!(messages[1].1, "\"週五\"");
+    let answer: Value = serde_json::from_str(&messages[2].1).unwrap();
+    assert!(answer["text"].as_str().unwrap().starts_with("週五發布"));
+    // The unsynced Design review and the made-up id are not cited back.
+    let cited: Vec<&str> = answer["citations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(cited, [WEEKLY]);
+    assert_eq!(answer["citations"][0]["title"], "Weekly sync");
+
+    let args = claude_args(&h);
+    let after = |flag: &str| {
+        let i = args.iter().position(|a| a == flag).unwrap();
+        args[i + 1].clone()
+    };
+    let mcp: Value = serde_json::from_str(&after("--mcp-config")).unwrap();
+    assert_eq!(
+        mcp["mcpServers"]["recall"]["args"],
+        json!(["mcp", "--synced-only"])
+    );
+    assert_eq!(
+        mcp["mcpServers"]["recall"]["env"]["RECALL_CONFIG"],
+        json!(h.state.config_path)
+    );
+    assert!(args.iter().any(|a| a == "--strict-mcp-config"));
+    assert_eq!(after("--allowedTools"), "Read,Grep,Glob,mcp__recall");
+    let denied = after("--disallowedTools");
+    assert!(
+        denied.contains(&format!("Read(/{}/**)", h.config.meetings_dir.display())),
+        "{denied}"
+    );
+    assert_eq!(claude_file(&h, "stdin"), b"When do we ship?");
+}
+
+#[tokio::test]
+async fn cross_meeting_ask_runs_one_at_a_time() {
+    let h = claude_harness(&format!("sleep 2\n{AGENT_REPLY}"), 60).await;
+    let first = ask_all(&h, "first").await;
+    assert_eq!(first.status(), 200);
+    let second = ask_all(&h, "second").await;
+    assert_eq!(second.status(), 409);
+    let messages = sse_messages(&first.text().await.unwrap());
+    assert_eq!(messages.last().unwrap().0, "done");
+    // The lock is released once the run ends.
+    let third = ask_all(&h, "third").await;
+    assert_eq!(third.status(), 200);
+    third.text().await.unwrap();
+}
+
+#[tokio::test]
+async fn cross_meeting_ask_reports_a_timeout() {
+    let h = claude_harness("sleep 30", 1).await;
+    let messages = sse_messages(&ask_all(&h, "slow").await.text().await.unwrap());
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert_eq!(messages[0].0, "error");
+    assert!(
+        messages[0].1.contains("did not finish within 1 s"),
+        "{messages:?}"
+    );
+}
+
+#[tokio::test]
+async fn ask_about_a_synced_meeting_goes_to_claude_code() {
+    let reply = r#"echo '{"type":"result","subtype":"success","is_error":false,"result":"From Claude Code."}'"#;
+    let h = claude_harness(reply, 60).await;
+    let ask = || async {
+        reqwest::Client::new()
+            .post(h.url(&format!("/api/meetings/{}/ask", encode(WEEKLY))))
+            .json(&json!({ "question": "When is the release?" }))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    };
+    // Not synced: the configured model.
+    assert_eq!(
+        ask().await,
+        "data: The \n\ndata: answer\n\ndata: .\n\nevent: done\ndata: end\n\n"
+    );
+    set_sync(&h, WEEKLY, true);
+    assert_eq!(
+        ask().await,
+        "data: From Claude Code.\n\nevent: done\ndata: end\n\n"
+    );
+    assert!(claude_args(&h).iter().any(|a| a == "--disallowedTools"));
+}
+
+#[tokio::test]
+async fn synced_filter_follows_the_switch_and_pending_requests() {
+    let h = harness().await;
+    let ids = |q: &'static str| {
+        let url = h.url(&format!("/api/meetings?synced=true{q}"));
+        async move {
+            let body: Value = reqwest::get(url).await.unwrap().json().await.unwrap();
+            let rows: Vec<String> = body["meetings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["id"].as_str().unwrap().to_string())
+                .collect();
+            (rows, body["hits"].as_array().unwrap().len())
+        }
+    };
+    assert_eq!(ids("").await, (Vec::<String>::new(), 0));
+    set_sync(&h, WEEKLY, true);
+    assert_eq!(ids("&q=release").await, (vec![WEEKLY.to_string()], 1));
+    // A switch flipped while a job runs counts before it is written.
+    h.vault.request(&MeetingId(REVIEW.into()), Some(true));
+    h.vault.request(&MeetingId(WEEKLY.into()), Some(false));
+    assert_eq!(ids("").await, (vec![REVIEW.to_string()], 0));
 }

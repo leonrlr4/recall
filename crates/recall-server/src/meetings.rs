@@ -1,6 +1,7 @@
 //! `/api/meetings`: listing and search, one meeting, edits, deletion and
 //! reprocessing.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
@@ -76,6 +77,9 @@ pub struct ListQuery {
     participant: Option<String>,
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
+    /// `true`: only meetings marked for sync, rows and hits alike.
+    #[serde(default)]
+    synced: bool,
 }
 
 #[derive(Serialize)]
@@ -102,15 +106,77 @@ pub async fn list(
         to: query.to,
     };
     let index = state.index.lock().expect("index lock poisoned");
-    let meetings = index.list(&filter)?;
-    let hits = match &filter.q {
-        Some(q) => index.search(q, SEARCH_LIMIT)?,
+    let mut meetings = index.list(&filter)?;
+    // Unsynced meetings' hits are dropped after the search, so it looks
+    // further to leave room for them.
+    let search_limit = if query.synced {
+        SEARCH_LIMIT * 5
+    } else {
+        SEARCH_LIMIT
+    };
+    let mut hits = match &filter.q {
+        Some(q) => index.search(q, search_limit)?,
         None => Vec::new(),
     };
+    drop(index);
+    if query.synced {
+        let synced = SyncedSet::new(&state);
+        meetings.retain(|m| synced.contains(&m.id));
+        hits.retain(|h| synced.contains(&h.meeting));
+        hits.truncate(SEARCH_LIMIT);
+    }
     Ok(Json(ListResponse {
         meetings: meetings.into_iter().map(RowDto::from).collect(),
         hits: hits.into_iter().map(HitDto::from).collect(),
     }))
+}
+
+/// Answers whether a meeting is marked for sync (the user published it as
+/// work), remembering each answer for the life of one request.
+///
+/// A switch value requested while a job processes the meeting wins over
+/// `meeting.json`, as in `GET /api/meetings/{id}`. A meeting whose
+/// `meeting.json` does not read counts as not synced.
+pub(crate) struct SyncedSet<'a> {
+    state: &'a AppState,
+    seen: RefCell<BTreeMap<MeetingId, bool>>,
+}
+
+impl<'a> SyncedSet<'a> {
+    pub(crate) fn new(state: &'a AppState) -> Self {
+        Self {
+            state,
+            seen: RefCell::default(),
+        }
+    }
+
+    pub(crate) fn contains(&self, id: &MeetingId) -> bool {
+        if let Some(&known) = self.seen.borrow().get(id) {
+            return known;
+        }
+        let requested = self
+            .state
+            .vault
+            .as_ref()
+            .and_then(|v| v.status(id).requested);
+        let synced = requested.unwrap_or_else(|| sync_flag(&self.state.config, id));
+        self.seen.borrow_mut().insert(id.clone(), synced);
+        synced
+    }
+}
+
+/// `meeting.json`'s `sync`, read without building the whole meeting.
+fn sync_flag(config: &Config, id: &MeetingId) -> bool {
+    #[derive(Deserialize)]
+    struct Flag {
+        #[serde(default)]
+        sync: bool,
+    }
+    MeetingDir::open(&config.meetings_dir, id)
+        .ok()
+        .and_then(|dir| fs::read(dir.path().join("meeting.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<Flag>(&bytes).ok())
+        .is_some_and(|f| f.sync)
 }
 
 /// The meeting's directory; any id that does not name one is a 404.

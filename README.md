@@ -235,8 +235,9 @@ that are then merged, and a question about such a meeting is refused with
 With `[claude_code] enabled = true`, a meeting marked for sync is summarized by
 Claude Code in print mode instead of the `llm` backend. It runs in `cwd`, so it
 reads the CLAUDE.md files and Claude Code memory there and may look up project
-notes and repositories under it to get names, tickets and context right. Every
-other meeting, and the "ask this meeting" box, keep the `llm` backend. Install
+notes and repositories under it to get names, tickets and context right. The
+"ask this meeting" box of a synced meeting goes to Claude Code the same way.
+Every other meeting keeps the `llm` backend. Install
 Claude Code and log in (`claude`, then `/login`) as the user the daemon runs
 as. Each summary runs:
 
@@ -255,6 +256,21 @@ When the run fails (`claude` missing, not logged in, timeout, a reply that is
 not the summary JSON), recall logs the reason and summarizes that meeting with
 the `llm` backend. `models.llm` in the meeting's `meeting.json` names the one
 that wrote the summary, e.g. `claude-code/claude-opus-5-5`.
+
+### Questions across meetings
+
+The Ask page in the web UI (`POST /api/ask`) takes a question such as "What
+did we decide with Arlene about TRL6 last week?" and has Claude Code answer it
+from your synced meetings. The run is the one above with `--output-format stream-json`, plus
+`recall mcp --synced-only` as its only MCP server (`--mcp-config` with
+`--strict-mcp-config`) and its tools allowed. That server offers only the read
+tools, and to them a meeting not marked for sync does not exist; the meetings
+directory and recall's data directory are denied to the file tools as well.
+The answer is in `summary_lang` whatever language the question is in (quotes
+keep the language they were spoken in), and every claim cites a meeting and a
+transcript time that the page links to. One question runs at a time, for at
+most `timeout_secs` or 300 s, whichever is shorter. With `[claude_code]` off,
+the page explains how to turn it on.
 
 ## GPU transcription
 
@@ -380,7 +396,9 @@ Tools:
 - `rename_meeting`: change a meeting's title.
 - `name_speaker`: set a speaker's name everywhere.
 
-There is no tool to discard or delete a meeting.
+There is no tool to discard or delete a meeting. `recall mcp --synced-only`
+serves only the four read tools, and only meetings marked for sync; the Ask
+page runs it that way.
 
 ## Privacy
 
@@ -397,7 +415,9 @@ There is no tool to discard or delete a meeting.
   question asked about a meeting.
 - With `[claude_code]` enabled, the transcript of every meeting marked for sync,
   with speaker names, goes to Anthropic through Claude Code, together with
-  whatever files under `cwd` it reads while summarizing.
+  whatever files under `cwd` it reads while summarizing. A question on the Ask
+  page sends Anthropic the transcripts and notes of the synced meetings Claude
+  Code reads to answer it; meetings not marked for sync are never sent.
 - With `vault.remote` set, the notes of meetings you switch to "Publish to
   vault" are pushed to that repository, where everyone with access can read
   them and their history. Nothing else is pushed.

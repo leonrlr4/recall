@@ -6,6 +6,7 @@ export type Route =
   | { name: 'meeting'; id: string; t: number | null }
   | { name: 'people' }
   | { name: 'settings' }
+  | { name: 'ask' }
   | { name: 'not_found' };
 
 /** Maps a pathname (and optional `?t=<ms>` search string) to a route. */
@@ -13,6 +14,7 @@ export function match(pathname: string, search = ''): Route {
   if (pathname === '/' || pathname === '') return { name: 'list' };
   if (pathname === '/people') return { name: 'people' };
   if (pathname === '/settings') return { name: 'settings' };
+  if (pathname === '/ask') return { name: 'ask' };
   const m = /^\/m\/([^/]+)\/?$/.exec(pathname);
   if (m) {
     let id: string;

@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { match, meetingPath } from './router';
 
 describe('router', () => {
-  it('matches_the_four_paths', () => {
+  it('matches_the_fixed_paths', () => {
     expect(match('/')).toEqual({ name: 'list' });
     expect(match('/people')).toEqual({ name: 'people' });
     expect(match('/settings')).toEqual({ name: 'settings' });
+    expect(match('/ask')).toEqual({ name: 'ask' });
     expect(match('/nope')).toEqual({ name: 'not_found' });
   });
 

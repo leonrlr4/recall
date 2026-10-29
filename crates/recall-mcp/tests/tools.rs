@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use chrono::{Local, TimeZone, Utc};
 use recall_llm::Llm;
 use recall_mcp::{PAGE_TOKENS, Recall, Url};
-use recall_server::{AppState, ControlCommand, SelfTestResult, StatusSnapshot, build_router};
+use recall_server::{
+    AppState, ControlCommand, QaState, SelfTestResult, StatusSnapshot, build_router,
+};
 use recall_store::markdown::clock;
 use recall_store::{
     ActionItem, Config, Index, Meeting, MeetingDir, MeetingId, Segment, Side, SpeakerId, Speakers,
@@ -121,8 +123,11 @@ fn long_segments(alice: &SpeakerId) -> Vec<Segment> {
 }
 
 async fn connect(base: Url) -> RunningService<RoleClient, ()> {
+    connect_to(Recall::new(base).unwrap()).await
+}
+
+async fn connect_to(server: Recall) -> RunningService<RoleClient, ()> {
     let (server_io, client_io) = tokio::io::duplex(1 << 16);
-    let server = Recall::new(base).unwrap();
     tokio::spawn(async move {
         let running = server.serve(server_io).await.unwrap();
         let _ = running.waiting().await;
@@ -223,6 +228,7 @@ async fn harness() -> Harness {
         }),
         meet: Arc::new(|batch| Ok(batch.events.len())),
         vault: None,
+        qa: QaState::default(),
     };
     let router = build_router(state.clone());
     tokio::spawn(async move { axum_serve(listener, router).await });
@@ -590,4 +596,93 @@ async fn busy_meeting_maps_409() {
         assert!(is_error(&result), "{name}: {result:?}");
         assert_eq!(text(&result, 0), BUSY, "{name}");
     }
+}
+
+fn set_sync(h: &Harness, id: &MeetingId, sync: bool) {
+    let path = h.state.config.meetings_dir.join(&id.0);
+    let mut meeting = Meeting::load(&path).unwrap();
+    meeting.sync = sync;
+    meeting.save(&path).unwrap();
+}
+
+/// What every read tool shows of `id` in synced-only mode: whether search
+/// lists it or its transcript, and whether the per-meeting tools and the
+/// action items reach it.
+async fn visible(client: &RunningService<RoleClient, ()>, id: &MeetingId, word: &str) -> [bool; 5] {
+    let search = text(
+        &call(client, "search_meetings", json!({ "query": word })).await,
+        0,
+    );
+    let in_rows = search.contains(&format!("- {}: ", id.0));
+    let in_hits = search.contains(&format!("- {} [", id.0));
+    let meeting = !is_error(&call(client, "get_meeting", json!({ "id": id.0 })).await);
+    let transcript = call(client, "get_transcript", json!({ "id": id.0 })).await;
+    if is_error(&transcript) {
+        assert!(text(&transcript, 0).contains("404"), "{transcript:?}");
+    }
+    let items = call(client, "list_action_items", json!({})).await;
+    let in_items = items.structured_content.unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["meeting"] == id.0);
+    [
+        in_rows || in_hits,
+        in_hits,
+        meeting,
+        !is_error(&transcript),
+        in_items,
+    ]
+}
+
+#[tokio::test]
+async fn synced_only_mode_hides_every_unsynced_meeting() {
+    let h = harness().await;
+    let base: Url = format!("http://127.0.0.1:{}", h.state.config.port)
+        .parse()
+        .unwrap();
+    let client = connect_to(Recall::synced_only(base).unwrap()).await;
+
+    let mut names: Vec<String> = client
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name.into_owned())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "get_meeting",
+            "get_transcript",
+            "list_action_items",
+            "search_meetings"
+        ]
+    );
+    for name in ["start_recording", "recording_status", "rename_meeting"] {
+        let refused = client
+            .call_tool(CallToolRequestParams::new(name))
+            .await
+            .map_or(true, |r| is_error(&r));
+        assert!(refused, "{name} must not run in synced-only mode");
+    }
+
+    // Nothing synced: neither meeting shows through any tool.
+    assert_eq!(visible(&client, &h.weekly, "release").await, [false; 5]);
+    assert_eq!(visible(&client, &h.long, "roadmap").await, [false; 5]);
+    let none = text(
+        &call(&client, "search_meetings", json!({ "query": "release" })).await,
+        0,
+    );
+    assert_eq!(none, "No meetings match.\n");
+
+    // The weekly sync is published; the long planning stays private.
+    set_sync(&h, &h.weekly, true);
+    assert_eq!(visible(&client, &h.weekly, "release").await[1..], [true; 4]);
+    assert_eq!(visible(&client, &h.long, "roadmap").await, [false; 5]);
+    // The same meeting through the unrestricted server, for contrast.
+    assert!(!is_error(
+        &call(&h.client, "get_meeting", json!({ "id": h.long.0 })).await
+    ));
 }

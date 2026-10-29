@@ -69,7 +69,12 @@ enum Cmd {
     Selftest,
     /// Serve the meetings to an MCP client over stdin/stdout, through the
     /// daemon's API: `claude mcp add recall -- recall mcp`.
-    Mcp,
+    Mcp {
+        /// Serve only the read tools, and only meetings marked for sync;
+        /// the daemon's questions across meetings run it this way.
+        #[arg(long)]
+        synced_only: bool,
+    },
     /// Manage the speech models.
     Models {
         #[command(subcommand)]
@@ -169,7 +174,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             command: IndexCmd::Rebuild,
         } => return rebuild(&Config::load()?),
         Cmd::Selftest => return run_selftest(&Config::load()?),
-        Cmd::Mcp => return serve_mcp(&Config::load()?),
+        Cmd::Mcp { synced_only } => return serve_mcp(&Config::load()?, synced_only),
         Cmd::Models {
             command: ModelsCmd::Download,
         } => return download_models(&Config::load()?),
@@ -188,9 +193,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 /// stdout carries the MCP session, so nothing else may print to it.
-fn serve_mcp(config: &Config) -> Result<ExitCode> {
+fn serve_mcp(config: &Config, synced_only: bool) -> Result<ExitCode> {
     let base = recall_mcp::Url::parse(&format!("http://127.0.0.1:{}", config.port))?;
-    tokio::runtime::Runtime::new()?.block_on(recall_mcp::serve_stdio(base))?;
+    tokio::runtime::Runtime::new()?.block_on(recall_mcp::serve_stdio(base, synced_only))?;
     Ok(ExitCode::SUCCESS)
 }
 

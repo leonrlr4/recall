@@ -12,9 +12,15 @@ pub use reqwest::Url;
 pub use tools::{PAGE_TOKENS, Recall};
 
 /// Serves the tools on stdin/stdout until the client disconnects. `base` is
-/// the daemon's address, `http://127.0.0.1:{config.port}`.
-pub async fn serve_stdio(base: Url) -> anyhow::Result<()> {
-    let service = Recall::new(base)?
+/// the daemon's address, `http://127.0.0.1:{config.port}`. `synced_only`
+/// serves [`Recall::synced_only`].
+pub async fn serve_stdio(base: Url, synced_only: bool) -> anyhow::Result<()> {
+    let recall = if synced_only {
+        Recall::synced_only(base)?
+    } else {
+        Recall::new(base)?
+    };
+    let service = recall
         .serve(rmcp::transport::stdio())
         .await
         .context("starting the MCP session")?;

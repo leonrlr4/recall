@@ -11,6 +11,7 @@ mod events;
 mod meet;
 mod meetings;
 mod people;
+mod qa;
 mod static_files;
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -28,6 +29,8 @@ use recall_llm::Llm;
 use recall_store::{Config, Event, Index, MeetBatch, MeetingId, Speakers, Step};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
+
+pub use qa::QaState;
 
 /// What the recorder is doing right now, as `GET /api/status` reports it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -148,6 +151,8 @@ pub struct AppState {
     pub meet: Arc<MeetSinkFn>,
     /// `None` when `vault.remote` is empty: publishing is off.
     pub vault: Option<Arc<dyn Vault>>,
+    /// Questions across meetings (`POST /api/ask`).
+    pub qa: QaState,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -163,6 +168,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/meetings/{id}/audio", get(audio::serve))
         .route("/meetings/{id}/screen", get(audio::serve_screen))
         .route("/meetings/{id}/ask", post(ask::ask))
+        .route("/ask", post(qa::ask))
         .route("/people", get(people::list))
         .route("/people/{id}", axum::routing::patch(people::patch))
         .route("/status", get(control::status))

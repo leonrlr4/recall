@@ -2,6 +2,7 @@
   "nav": {
     "label": "主選單",
     "meetings": "會議",
+    "ask": "提問",
     "people": "人員",
     "settings": "設定"
   },
@@ -149,6 +150,17 @@
     "stopped": "（已停止）",
     "failed": "無法取得回答，請確認語言模型正在執行。",
     "too_long": "這場會議太長，超過語言模型的上下文長度。請到設定調高「上下文長度」。"
+  },
+  "qa": {
+    "title": "跨會議提問",
+    "intro": "針對已同步的工作會議提問。Claude Code 會參考你的專案筆記搜尋會議，並把每個重點連回出處的會議和時間點。它讀到的逐字稿會傳給 Anthropic。",
+    "placeholder": "上週跟 Arlene 談 TRL6 決定了什麼？",
+    "working": "搜尋會議中… {seconds} 秒",
+    "cited": "引用的會議",
+    "busy": "上一個問題還在回答中，請等它完成再問。",
+    "failed": "無法從 Claude Code 取得回答。",
+    "off": "跨會議提問需要 Claude Code。請在 recall 的設定檔（~/.config/recall/config.toml）開啟它，再重新啟動 recall：",
+    "off_hint": "cwd 是你的工作目錄，Claude Code 會讀其中的 CLAUDE.md 和筆記當背景。只會搜尋已開啟同步的會議。"
   },
   "people": {
     "title": "人員",
