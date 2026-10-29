@@ -1,8 +1,10 @@
 //! Names and project terms that the transcriber and the summary model should
-//! spell right, taken from the config, the speaker registry and the user's
-//! Markdown notes.
+//! spell right, taken from the config, the speaker registry, a list Claude
+//! Code chose from the user's notes, or the notes themselves.
 //!
-//! Extraction from notes is deterministic: a term is a ticket id
+//! The chosen list is the curated file (`<data_dir>/glossary.json`, see
+//! [`Curated`]), written by `recall glossary refresh`. Without it, terms are
+//! extracted from notes deterministically: a term is a ticket id
 //! (`BBINT-220`), an acronym (`TRL6`, `BII`), a CamelCase name (`BixBench`,
 //! `scRNA`) or a capitalised word written mid-sentence (`Capsule`, `Zenodo`),
 //! and a `people/` directory names one person per subdirectory. Chinese terms
@@ -11,10 +13,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use recall_store::Config;
 use recall_store::config::GlossaryConfig;
 use recall_store::speakers::{ME, Speakers};
+use serde::{Deserialize, Serialize};
 
 /// A directory with this name holds one subdirectory (or note) per person,
 /// named after them.
@@ -32,57 +39,188 @@ const MIN_COUNT: usize = 2;
 /// they are often the title words of a reference list ("Genome Biology",
 /// "Science").
 const MIN_NOTES_CAPITALISED: usize = 2;
+/// The curated file's name under `data_dir`.
+const CURATED_FILE: &str = "glossary.json";
+
+/// Where a glossary term came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// `[glossary] terms`.
+    Typed,
+    /// A name given to a voice.
+    Voice,
+    /// The curated file.
+    Curated,
+    /// A `people/` directory under the sources.
+    People,
+    /// Extracted from the notes under the sources.
+    Notes,
+}
+
+impl Origin {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Typed => "terms",
+            Self::Voice => "voice",
+            Self::Curated => "curated",
+            Self::People => "people",
+            Self::Notes => "notes",
+        }
+    }
+}
 
 /// The terms, most useful first, at most `max_terms` of them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Glossary {
     terms: Vec<String>,
+    /// Where each of `terms` came from, by position.
+    origins: Vec<Origin>,
 }
 
 impl Glossary {
+    /// [`Glossary::build`] with the curated file under `config.data_dir`.
+    /// A curated file that cannot be read counts as missing.
+    pub fn load(config: &Config, speakers: &Speakers) -> Self {
+        let curated = Curated::load(&Curated::path(&config.data_dir))
+            .ok()
+            .flatten();
+        Self::build(&config.glossary, curated.as_ref(), speakers)
+    }
+
     /// The user's own `terms` first, in their order, then the names given
-    /// to voices in `speakers`, then the people and terms found in
-    /// `sources`, each name once (ignoring case), cut to `max_terms`.
-    /// Sources that cannot be read are skipped.
-    pub fn build(config: &GlossaryConfig, speakers: &Speakers) -> Self {
+    /// to voices in `speakers`, then the `curated` terms or, without any,
+    /// the people and terms found in `sources`; each name once (ignoring
+    /// case), cut to `max_terms`. Sources that cannot be read are skipped.
+    pub fn build(config: &GlossaryConfig, curated: Option<&Curated>, speakers: &Speakers) -> Self {
         if config.max_terms == 0 {
             return Self::default();
         }
+        let typed = config.terms.iter().map(|t| (t.clone(), Origin::Typed));
         let named = speakers
             .people()
             .iter()
             .filter(|p| p.named && p.id.0 != ME && !is_cluster_label(&p.name))
-            .map(|p| p.name.clone());
-        let notes = Notes::read(&config.source_paths());
-        let candidates = config
-            .terms
-            .iter()
-            .cloned()
-            .chain(named)
-            .chain(notes.people.iter().cloned())
-            .chain(notes.ranked());
-        Self::from_terms(candidates, config.max_terms)
+            .map(|p| (p.name.clone(), Origin::Voice));
+        let rest: Vec<(String, Origin)> = match curated.filter(|c| !c.terms.is_empty()) {
+            Some(curated) => curated
+                .terms
+                .iter()
+                .map(|t| (t.term.clone(), Origin::Curated))
+                .collect(),
+            None => {
+                let notes = NoteTerms::read(&config.source_paths());
+                let people = notes.people.into_iter().map(|p| (p, Origin::People));
+                let terms = notes.terms.into_iter().map(|t| (t.term, Origin::Notes));
+                people.chain(terms).collect()
+            }
+        };
+        Self::from_terms(typed.chain(named).chain(rest), config.max_terms)
     }
 
     /// `terms` trimmed, without empties and repeats (ignoring case), cut to
     /// `max_terms`.
-    pub fn from_terms(terms: impl IntoIterator<Item = String>, max_terms: usize) -> Self {
+    pub fn from_terms(terms: impl IntoIterator<Item = (String, Origin)>, max_terms: usize) -> Self {
         let mut seen = HashSet::new();
-        let terms = terms
+        let (terms, origins) = terms
             .into_iter()
-            .map(|t| t.trim().replace('\0', ""))
-            .filter(|t| !t.is_empty() && seen.insert(t.to_lowercase()))
+            .map(|(t, origin)| (t.trim().replace('\0', ""), origin))
+            .filter(|(t, _)| !t.is_empty() && seen.insert(t.to_lowercase()))
             .take(max_terms)
-            .collect();
-        Self { terms }
+            .unzip();
+        Self { terms, origins }
     }
 
     pub fn terms(&self) -> &[String] {
         &self.terms
     }
 
+    /// Each term with where it came from.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, Origin)> {
+        self.terms
+            .iter()
+            .map(String::as_str)
+            .zip(self.origins.iter().copied())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.terms.is_empty()
+    }
+}
+
+/// The terms Claude Code chose from the user's notes, most useful first, as
+/// `recall glossary refresh` saves them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Curated {
+    pub refreshed: DateTime<Utc>,
+    /// The model that chose them.
+    pub model: String,
+    pub terms: Vec<CuratedTerm>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CuratedTerm {
+    pub term: String,
+    /// Why the term is in the list, for `recall glossary show`.
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl Curated {
+    /// `<data_dir>/glossary.json`.
+    pub fn path(data_dir: &Path) -> PathBuf {
+        data_dir.join(CURATED_FILE)
+    }
+
+    /// The file at `path`; None when there is none.
+    pub fn load(path: &Path) -> Result<Option<Self>> {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        serde_json::from_str(&text)
+            .map(Some)
+            .with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// Writes the file through a temporary file and a rename, so a run that
+    /// reads it meanwhile sees the old list or the new one, never half.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let dir = path.parent().unwrap_or(Path::new("."));
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_string_pretty(self)? + "\n")
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
+    }
+}
+
+/// A term extracted from the notes, with how often it occurs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteTerm {
+    pub term: String,
+    /// Notes it occurs in.
+    pub notes: usize,
+    /// Occurrences in all notes.
+    pub count: usize,
+}
+
+/// What extraction finds in the note sources.
+#[derive(Debug, Default)]
+pub struct NoteTerms {
+    /// Names from `people/` directories, in path order.
+    pub people: Vec<String>,
+    /// Terms seen at least [`MIN_COUNT`] times, those in more notes first.
+    pub terms: Vec<NoteTerm>,
+}
+
+impl NoteTerms {
+    pub fn read(sources: &[PathBuf]) -> Self {
+        let notes = Notes::read(sources);
+        Self {
+            terms: notes.counts.ranked(),
+            people: notes.people,
+        }
     }
 }
 
@@ -163,10 +301,6 @@ impl Notes {
             }
         }
         notes
-    }
-
-    fn ranked(&self) -> Vec<String> {
-        self.counts.ranked()
     }
 }
 
@@ -274,7 +408,7 @@ impl TermCounts {
 
     /// Terms seen at least [`MIN_COUNT`] times, those in more notes first,
     /// then by total count, then alphabetically so the order is stable.
-    fn ranked(&self) -> Vec<String> {
+    fn ranked(&self) -> Vec<NoteTerm> {
         let capitalised = self.capitalised.iter().filter(|(word, (_, count, _))| {
             let lower = self.lowercase.get(&word.to_lowercase()).copied();
             lower.unwrap_or(0) < *count
@@ -288,7 +422,13 @@ impl TermCounts {
             .map(|(t, (notes, count, _))| (t, *notes, *count))
             .collect();
         all.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(b.0)));
-        all.into_iter().map(|(t, _, _)| t.clone()).collect()
+        all.into_iter()
+            .map(|(t, notes, count)| NoteTerm {
+                term: t.clone(),
+                notes,
+                count,
+            })
+            .collect()
     }
 }
 
@@ -597,6 +737,10 @@ mod tests {
         v.iter().map(|t| t.to_string()).collect()
     }
 
+    fn names(terms: Vec<NoteTerm>) -> Vec<String> {
+        terms.into_iter().map(|t| t.term).collect()
+    }
+
     #[test]
     fn classify_finds_tickets_acronyms_and_names() {
         use Kind::*;
@@ -657,7 +801,15 @@ mod tests {
         );
         counts.add_note(2, "Once a TRL6 run ends, Tommy said Problem solved.");
         let ranked = counts.ranked();
-        assert_eq!(ranked, ["Tommy", "BixBench", "BBINT", "BBINT-208"]);
+        assert_eq!(
+            ranked[3],
+            NoteTerm {
+                term: "BBINT-208".into(),
+                notes: 1,
+                count: 3
+            }
+        );
+        assert_eq!(names(ranked), ["Tommy", "BixBench", "BBINT", "BBINT-208"]);
     }
 
     #[test]
@@ -674,7 +826,7 @@ mod tests {
         // In one note only: a capitalised word needs two.
         counts.add_note(3, "Nature Genome Biology, Genome Biology.");
         counts.add_note(4, "上傳 Zenodo。");
-        assert_eq!(counts.ranked(), ["Zenodo"]);
+        assert_eq!(names(counts.ranked()), ["Zenodo"]);
     }
 
     #[test]
@@ -691,14 +843,14 @@ mod tests {
         let single = tmp.path().join("single.md");
         fs::write(&single, "ATAC 門檻 ATAC").unwrap();
 
-        let notes = Notes::read(&[
+        let notes = NoteTerms::read(&[
             tmp.path().join("vault"),
             single.clone(),
             tmp.path().join("missing"),
         ]);
 
         assert_eq!(notes.people, ["Arlene", "Geremy", "Mary Jane"]);
-        assert_eq!(notes.ranked(), ["ATAC", "BBINT", "BBINT-239"]);
+        assert_eq!(names(notes.terms), ["ATAC", "BBINT", "BBINT-239"]);
     }
 
     #[test]
@@ -715,20 +867,25 @@ mod tests {
             terms: s(&["capsule whitepaper", " geremy ", ""]),
             sources: vec![tmp.path().to_path_buf()],
             max_terms: 30,
+            ..GlossaryConfig::default()
         };
-        let glossary = Glossary::build(&config, &speakers);
+        let glossary = Glossary::build(&config, None, &speakers);
         // "Me" and the unnamed voice are left out; Geremy is already a user
         // term and Arlene already a person.
         assert_eq!(
             glossary.terms(),
             ["capsule whitepaper", "geremy", "Arlene", "TRL6"]
         );
+        let origins: Vec<Origin> = glossary.entries().map(|(_, o)| o).collect();
+        use Origin::*;
+        assert_eq!(origins, [Typed, Typed, People, Notes]);
 
         let short = Glossary::build(
             &GlossaryConfig {
                 max_terms: 2,
                 ..config.clone()
             },
+            None,
             &speakers,
         );
         assert_eq!(short.terms(), ["capsule whitepaper", "geremy"]);
@@ -737,9 +894,73 @@ mod tests {
                 max_terms: 0,
                 ..config
             },
+            None,
             &speakers,
         );
         assert!(off.is_empty());
+    }
+
+    fn curated(terms: &[&str]) -> Curated {
+        Curated {
+            refreshed: "2026-10-29T08:00:00Z".parse().unwrap(),
+            model: "claude-opus-5-5".into(),
+            terms: terms
+                .iter()
+                .map(|t| CuratedTerm {
+                    term: t.to_string(),
+                    reason: format!("why {t}"),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn build_uses_the_curated_terms_instead_of_the_notes() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("people/arlene")).unwrap();
+        fs::write(tmp.path().join("n.md"), "Exhibit 和 Exhibit，ZZTOP ZZTOP").unwrap();
+        let mut speakers = Speakers::default();
+        speakers.add("Geremy", None);
+        let config = GlossaryConfig {
+            terms: s(&["TRL6"]),
+            sources: vec![tmp.path().to_path_buf()],
+            ..GlossaryConfig::default()
+        };
+        let list = curated(&["Arlene", "trl6", "BBINT"]);
+
+        let glossary = Glossary::build(&config, Some(&list), &speakers);
+        let entries: Vec<(&str, Origin)> = glossary.entries().collect();
+        assert_eq!(
+            entries,
+            [
+                ("TRL6", Origin::Typed),
+                ("Geremy", Origin::Voice),
+                ("Arlene", Origin::Curated),
+                ("BBINT", Origin::Curated),
+            ]
+        );
+        // An empty list counts as none.
+        let empty = Glossary::build(&config, Some(&curated(&[])), &speakers);
+        assert_eq!(empty.terms(), ["TRL6", "Geremy", "Arlene", "ZZTOP"]);
+    }
+
+    #[test]
+    fn curated_file_round_trips_and_missing_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Curated::path(&tmp.path().join("data"));
+        assert_eq!(Curated::load(&path).unwrap(), None);
+        let list = curated(&["TRL6"]);
+        list.save(&path).unwrap();
+        assert_eq!(Curated::load(&path).unwrap(), Some(list));
+        fs::write(&path, "not json").unwrap();
+        assert!(Curated::load(&path).is_err());
+
+        let config = Config {
+            data_dir: tmp.path().join("data"),
+            ..Config::default()
+        };
+        // An unreadable file falls back to the notes (none here).
+        assert!(Glossary::load(&config, &Speakers::default()).is_empty());
     }
 
     #[test]

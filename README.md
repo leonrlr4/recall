@@ -214,6 +214,7 @@ branch = "main"
 terms = ["Arlene", "BBINT-220", "TRL6"] # always included, first
 sources = ["~/notes/people"]           # Markdown files or directories; ~ is expanded
 max_terms = 30                         # 0 turns the glossary off
+refresh_days = 7                       # Claude Code re-chooses the terms; 0: only by hand
 ```
 
 ### Glossary
@@ -224,14 +225,26 @@ and each once (ignoring case), until `max_terms`:
 
 1. `terms`, as typed.
 2. The names you gave to voices on the People page.
-3. One person per subdirectory of any `people/` directory under `sources`
+3. The terms Claude Code chose, from `<data_dir>/glossary.json`. Without
+   that file, 4 and 5 instead.
+4. One person per subdirectory of any `people/` directory under `sources`
    (`people/arlene/` gives `Arlene`).
-4. Terms found in the `.md` files under `sources`: ticket ids (`BBINT-220`),
+5. Terms found in the `.md` files under `sources`: ticket ids (`BBINT-220`),
    acronyms (`TRL6`), CamelCase names (`BixBench`, `scRNA`) and words written
    capitalised mid-sentence in at least two notes (`Zenodo`), those in the
    most notes first. Front matter (except `description`), code, links and
    common English words and acronyms (`API`, `PDF`) are skipped, as are
    hidden directories and those starting with `_`.
+
+The extraction lets in ordinary words written capitalised and cuts some
+acronyms short (`TRL` for `TRL6`). `recall glossary refresh` runs Claude Code
+in `[claude_code] cwd` with read-only tools (Read, Grep, Glob, and the
+`sources` directories added), gives it the extracted candidates with their
+counts, and saves the names and terms it picks, up to 60, each with a reason,
+to `glossary.json`. With `[claude_code]` enabled the daemon does the same
+once the file is `refresh_days` old, checking hourly and never while a
+meeting is being processed. `recall glossary show` prints the list the next
+run will use and where each term came from.
 
 Breeze gets the glossary as a Traditional Chinese sentence naming the terms
 (「這次會議提到 Arlene、BBINT-220、TRL6。」), cut to 120 tokens, before each

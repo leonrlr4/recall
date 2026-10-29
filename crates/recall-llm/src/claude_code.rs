@@ -53,6 +53,10 @@ pub struct ClaudeCode {
     timeout: Duration,
     /// The model the last reply came from, as Claude Code reported it.
     replied_model: Mutex<Option<String>>,
+    /// Appended to the caller's system prompt; see [`ClaudeCode::for_task`].
+    note: String,
+    /// Directories the run may read besides `cwd`, as `--add-dir`.
+    add_dirs: Vec<PathBuf>,
 }
 
 /// The `--output-format json` result object; only the fields recall reads.
@@ -77,7 +81,18 @@ impl ClaudeCode {
             model: model.filter(|m| !m.is_empty()),
             timeout,
             replied_model: Mutex::new(None),
+            note: CONTEXT_NOTE.into(),
+            add_dirs: Vec::new(),
         }
+    }
+
+    /// For a run that is not about a meeting: `note` replaces the
+    /// meeting-specific [`CONTEXT_NOTE`] appended to the system prompt, and
+    /// the run may also read `dirs`. The tools stay the read-only [`TOOLS`].
+    pub fn for_task(mut self, note: &str, dirs: Vec<PathBuf>) -> Self {
+        self.note = note.into();
+        self.add_dirs = dirs;
+        self
     }
 
     pub fn from_config(cfg: &ClaudeCodeConfig) -> Self {
@@ -121,11 +136,14 @@ impl ClaudeCode {
         if let Some(model) = &self.model {
             args.extend(["--model".into(), model.clone()]);
         }
+        for dir in &self.add_dirs {
+            args.extend(["--add-dir".into(), dir.display().to_string()]);
+        }
         // Appended rather than replacing Claude Code's own system prompt,
         // which is what loads the CLAUDE.md files and memory.
         args.extend([
             "--append-system-prompt".into(),
-            format!("{system}{CONTEXT_NOTE}"),
+            format!("{system}{}", self.note),
         ]);
         args
     }
@@ -288,6 +306,24 @@ mod tests {
         let unset = ClaudeCode::new("claude", PathBuf::from("/w"), None, Duration::from_secs(1));
         assert!(!unset.args("S").iter().any(|a| a == "--model"));
         assert_eq!(unset.name(), "claude-code/default");
+    }
+
+    #[test]
+    fn for_task_replaces_the_meeting_note_and_adds_dirs() {
+        let cc = ClaudeCode::new("claude", PathBuf::from("/w"), None, Duration::from_secs(1))
+            .for_task("\nNOTE", vec![PathBuf::from("/notes")]);
+        let args = cc.args("SYSTEM");
+        let i = args.iter().position(|a| a == "--add-dir").unwrap();
+        assert_eq!(args[i + 1], "/notes");
+        let i = args
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .unwrap();
+        assert_eq!(args[i + 1], "SYSTEM\nNOTE");
+        assert_eq!(
+            args[args.iter().position(|a| a == "--tools").unwrap() + 1],
+            TOOLS
+        );
     }
 
     #[test]
