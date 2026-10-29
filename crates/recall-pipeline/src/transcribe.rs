@@ -44,8 +44,32 @@ pub trait Transcriber: Send {
         lang: &str,
     ) -> Result<Vec<Utterance>>;
 
+    /// Transcribes every track, handing each piece to `on_piece` as soon as
+    /// it is ready: the index of its track, its utterances, and the share of
+    /// the whole job now done (0 to 1). The default runs one track after
+    /// another, each in one piece.
+    fn transcribe_tracks(
+        &mut self,
+        tracks: &[Track<'_>],
+        lang: &str,
+        on_piece: &mut dyn FnMut(usize, Vec<Utterance>, f32),
+    ) -> Result<()> {
+        for (i, track) in tracks.iter().enumerate() {
+            let utterances = self.transcribe(track.samples16k, track.regions, lang)?;
+            on_piece(i, utterances, (i + 1) as f32 / tracks.len() as f32);
+        }
+        Ok(())
+    }
+
     /// Name recorded in the meeting's metadata.
     fn model_name(&self) -> String;
+}
+
+/// One 16 kHz mono track and its speech regions, in time order.
+#[derive(Clone, Copy)]
+pub struct Track<'a> {
+    pub samples16k: &'a [f32],
+    pub regions: &'a [Region],
 }
 
 /// Audio added before and after each region so whisper hears whole words.
@@ -129,6 +153,27 @@ impl Transcriber for WhisperTranscriber {
         regions: &[Region],
         lang: &str,
     ) -> Result<Vec<Utterance>> {
+        let mut out = Vec::new();
+        self.transcribe_tracks(
+            &[Track {
+                samples16k,
+                regions,
+            }],
+            lang,
+            &mut |_, utterances, _| out.extend(utterances),
+        )?;
+        Ok(out)
+    }
+
+    /// Runs the windows of all tracks in order of where they start in the
+    /// recording, so the transcript fills in from the beginning on both
+    /// sides at once. Each window is one piece.
+    fn transcribe_tracks(
+        &mut self,
+        tracks: &[Track<'_>],
+        lang: &str,
+        on_piece: &mut dyn FnMut(usize, Vec<Utterance>, f32),
+    ) -> Result<()> {
         // whisper-rs leaks the C copy of the language on every
         // `set_language`, so it is set once per call, not per window.
         if lang.contains('\0') {
@@ -136,51 +181,85 @@ impl Transcriber for WhisperTranscriber {
         }
         let mut params = self.params.clone();
         params.set_language(Some(lang));
-        let eot = self.ctx.token_eot();
-        let mut out = Vec::new();
+        let windows = interleave_windows(tracks);
+        let total = windows.len();
         let mut audio = Vec::new();
-        for window in glue_regions(samples16k.len(), regions) {
-            audio.clear();
-            for (i, piece) in window.iter().enumerate() {
-                if i > 0 {
-                    audio.resize(audio.len() + GAP_MS as usize * SAMPLES_PER_MS, 0.0);
-                }
-                let start = piece.original_start_ms as usize * SAMPLES_PER_MS;
-                let end = start + piece.len_ms as usize * SAMPLES_PER_MS;
-                audio.extend_from_slice(&samples16k[start..end]);
-            }
-            if audio.len() < MIN_WINDOW_SAMPLES {
-                audio.resize(MIN_WINDOW_SAMPLES, 0.0);
-            }
-            self.state.full(params.clone(), &audio).with_context(|| {
-                format!(
-                    "transcribing {} ms from {} ms",
-                    audio.len() / SAMPLES_PER_MS,
-                    window[0].original_start_ms
-                )
-            })?;
-            for segment in self.state.as_iter() {
-                let raw = segment.to_str_lossy().context("reading whisper segment")?;
-                let text = to_traditional(raw.trim());
-                if is_noise(&text) {
-                    continue;
-                }
-                let start_ms = map_back(&window, centis_to_ms(segment.start_timestamp()));
-                let end_ms = map_back_end(&window, centis_to_ms(segment.end_timestamp()));
-                out.push(Utterance {
-                    start_ms,
-                    end_ms: end_ms.max(start_ms),
-                    text,
-                    words: words(&segment, eot, &window),
-                });
-            }
+        for (done, (i, window)) in windows.into_iter().enumerate() {
+            let utterances = self.run_window(&params, tracks[i].samples16k, &window, &mut audio)?;
+            on_piece(i, utterances, (done + 1) as f32 / total as f32);
         }
-        Ok(out)
+        Ok(())
     }
 
     fn model_name(&self) -> String {
         self.name.clone()
     }
+}
+
+impl WhisperTranscriber {
+    /// Transcribes one glued `window` of `samples16k`, using `audio` as the
+    /// buffer for the glued samples.
+    fn run_window(
+        &mut self,
+        params: &FullParams<'_, '_>,
+        samples16k: &[f32],
+        window: &[Piece],
+        audio: &mut Vec<f32>,
+    ) -> Result<Vec<Utterance>> {
+        let eot = self.ctx.token_eot();
+        audio.clear();
+        for (i, piece) in window.iter().enumerate() {
+            if i > 0 {
+                audio.resize(audio.len() + GAP_MS as usize * SAMPLES_PER_MS, 0.0);
+            }
+            let start = piece.original_start_ms as usize * SAMPLES_PER_MS;
+            let end = start + piece.len_ms as usize * SAMPLES_PER_MS;
+            audio.extend_from_slice(&samples16k[start..end]);
+        }
+        if audio.len() < MIN_WINDOW_SAMPLES {
+            audio.resize(MIN_WINDOW_SAMPLES, 0.0);
+        }
+        self.state.full(params.clone(), audio).with_context(|| {
+            format!(
+                "transcribing {} ms from {} ms",
+                audio.len() / SAMPLES_PER_MS,
+                window[0].original_start_ms
+            )
+        })?;
+        let mut out = Vec::new();
+        for segment in self.state.as_iter() {
+            let raw = segment.to_str_lossy().context("reading whisper segment")?;
+            let text = to_traditional(raw.trim());
+            if is_noise(&text) {
+                continue;
+            }
+            let start_ms = map_back(window, centis_to_ms(segment.start_timestamp()));
+            let end_ms = map_back_end(window, centis_to_ms(segment.end_timestamp()));
+            out.push(Utterance {
+                start_ms,
+                end_ms: end_ms.max(start_ms),
+                text,
+                words: words(&segment, eot, window),
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// The glued windows of every track, each with its track's index, in order
+/// of where they start in the recording; on a tie the earlier track first.
+fn interleave_windows(tracks: &[Track<'_>]) -> Vec<(usize, Vec<Piece>)> {
+    let mut windows: Vec<(usize, Vec<Piece>)> = tracks
+        .iter()
+        .enumerate()
+        .flat_map(|(i, track)| {
+            glue_regions(track.samples16k.len(), track.regions)
+                .into_iter()
+                .map(move |window| (i, window))
+        })
+        .collect();
+    windows.sort_by_key(|(_, window)| window[0].original_start_ms);
+    windows
 }
 
 /// A stretch of the recording placed in a glued window.
@@ -484,6 +563,32 @@ mod tests {
             ]
         );
         assert!(glue_regions(len, &[]).is_empty());
+    }
+
+    #[test]
+    fn windows_of_both_tracks_run_in_recording_order() {
+        let r = |start_ms, end_ms| Region { start_ms, end_ms };
+        let samples = vec![0.0; 100_000 * SAMPLES_PER_MS];
+        // Me: one window at 0.8 s, one at 59.8 s (the gap is too long to glue).
+        let me = [r(1_000, 20_000), r(60_000, 70_000)];
+        // Them: 27.4 s padded leaves no room to glue the next one, so a
+        // window at 29.8 s and one at 59.8 s that ties with Me.
+        let them = [r(30_000, 57_000), r(60_000, 61_000)];
+        let tracks = [
+            Track {
+                samples16k: &samples,
+                regions: &me,
+            },
+            Track {
+                samples16k: &samples,
+                regions: &them,
+            },
+        ];
+        let order: Vec<(usize, u32)> = interleave_windows(&tracks)
+            .iter()
+            .map(|(i, w)| (*i, w[0].original_start_ms))
+            .collect();
+        assert_eq!(order, [(0, 800), (1, 29_800), (0, 59_800), (1, 59_800)]);
     }
 
     #[test]

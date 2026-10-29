@@ -50,10 +50,16 @@
   const meeting = $derived(detail?.meeting ?? null);
   const segments = $derived(meeting?.segments ?? []);
 
-  async function load() {
-    void loadRegistry();
+  /** Numbers loads; an answer older than the latest request is dropped. */
+  let loadSeq = 0;
+
+  async function load(withRegistry = true) {
+    if (withRegistry) void loadRegistry();
+    const mine = ++loadSeq;
     try {
-      detail = await getMeeting(id);
+      const fetched = await getMeeting(id);
+      if (mine !== loadSeq) return;
+      detail = fetched;
       error = null;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -81,6 +87,13 @@
       seenVersion = v;
       load();
     }
+  });
+
+  // While processing, every progress event brings more of the saved
+  // transcript; reload it so the lines appear as they are transcribed.
+  const progress = $derived(live.progress[id]);
+  $effect(() => {
+    if (progress && !pending) void load(false);
   });
 
   $effect(() => {
@@ -332,7 +345,6 @@
         })
       : '',
   );
-  const progress = $derived(live.progress[id]);
   // A progress event names the step running now, which the loaded steps
   // only know as of the last load; done/failed reload the meeting.
   const meetingState = $derived(

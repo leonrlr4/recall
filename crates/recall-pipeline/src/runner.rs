@@ -20,7 +20,7 @@ use crate::merge::merge_sides;
 use crate::models::{self, ModelId};
 use crate::naming::{apply_names, assign_clusters, name_clusters, name_from_meet};
 use crate::summarize::summarize;
-use crate::transcribe::{Transcriber, WhisperTranscriber};
+use crate::transcribe::{Track, Transcriber, Utterance, WhisperTranscriber};
 use crate::vad::{Region, SileroVad, Vad, drop_echo, merge_close};
 
 /// Whisper language code for transcription.
@@ -81,11 +81,15 @@ impl Engines {
 ///
 /// Those steps are first reset to pending, so a rerun never leaves an
 /// earlier run's later results marked done. Each step is marked running and
-/// saved before it starts, then done (and `on_progress` gets the step and the
-/// fraction of all steps now finished) or failed with its error, in which
+/// saved before it starts, then done (and `on_progress` gets the step, the
+/// fraction of all steps now finished and `true`) or failed with its error, in which
 /// case the run stops and returns that error. Steps before `from` are taken
 /// as done and only their saved results are used. `speakers` gains any new
 /// remote voice and is saved to `config.speakers_path()`.
+///
+/// `Transcribe` also saves the meeting each time a piece of the transcript
+/// is ready and calls `on_progress` with the fraction done so far and
+/// `false`, so a reader sees the transcript fill in.
 ///
 /// The work is CPU-bound and runs on the calling thread.
 pub async fn run_from(
@@ -94,7 +98,7 @@ pub async fn run_from(
     dir: &MeetingDir,
     speakers: &mut Speakers,
     from: Step,
-    on_progress: impl Fn(Step, f32),
+    on_progress: impl Fn(Step, f32, bool) + Sync,
 ) -> Result<()> {
     let path = dir.path();
     let mut meeting = Meeting::load(&path)?;
@@ -118,6 +122,9 @@ pub async fn run_from(
             speakers: &mut *speakers,
             meeting: &mut meeting,
             audio: &mut audio,
+            on_piece: &|share| {
+                on_progress(step, (i as f32 + share) / Step::ALL.len() as f32, false)
+            },
         };
         if let Err(e) = run.step(step).await {
             let e = e.context(format!("{step:?} step"));
@@ -141,7 +148,7 @@ pub async fn run_from(
                 .insert(step, StepState::Done { at: Utc::now() });
         }
         meeting.save(&path)?;
-        on_progress(step, (i + 1) as f32 / Step::ALL.len() as f32);
+        on_progress(step, (i + 1) as f32 / Step::ALL.len() as f32, true);
     }
     Ok(())
 }
@@ -163,6 +170,8 @@ struct Run<'a> {
     speakers: &'a mut Speakers,
     meeting: &'a mut Meeting,
     audio: &'a mut Option<Audio>,
+    /// Told the share of the current step done, after a saved piece of it.
+    on_piece: &'a (dyn Fn(f32) + Sync),
 }
 
 impl Run<'_> {
@@ -205,9 +214,33 @@ impl Run<'_> {
         self.audio()?;
         let audio = self.audio.as_ref().expect("loaded above");
         let transcriber = &mut self.engines.transcriber;
-        let me = transcriber.transcribe(&audio.me, &audio.me_regions, LANG)?;
-        let them = transcriber.transcribe(&audio.them, &audio.them_regions, LANG)?;
-        self.meeting.segments = merge_sides(me, them);
+        let tracks = [
+            Track {
+                samples16k: &audio.me,
+                regions: &audio.me_regions,
+            },
+            Track {
+                samples16k: &audio.them,
+                regions: &audio.them_regions,
+            },
+        ];
+        let mut sides: [Vec<Utterance>; 2] = Default::default();
+        let mut save_error = None;
+        let (meeting, path, on_piece) = (&mut *self.meeting, self.dir.path(), self.on_piece);
+        meeting.segments.clear();
+        transcriber.transcribe_tracks(&tracks, LANG, &mut |side, utterances, share| {
+            sides[side].extend(utterances);
+            meeting.segments = merge_sides(sides[0].clone(), sides[1].clone());
+            match meeting.save(&path) {
+                Ok(()) => on_piece(share),
+                Err(err) => {
+                    save_error.get_or_insert(err);
+                }
+            }
+        })?;
+        if let Some(err) = save_error {
+            return Err(err.context("saving the partial transcript"));
+        }
         self.meeting
             .models
             .insert("transcriber".into(), transcriber.model_name());

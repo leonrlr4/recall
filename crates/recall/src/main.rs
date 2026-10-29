@@ -423,7 +423,11 @@ fn transcribe_file(config: &Config, mic: &Path, computer: &Path, json: bool) -> 
         &dir,
         &mut speakers,
         Step::Segment,
-        |step, _| eprintln!("{} done", step_name(step)),
+        |step, _, done| {
+            if done {
+                eprintln!("{} done", step_name(step));
+            }
+        },
     ))?;
 
     let meeting = Meeting::load(&dir.path())?;

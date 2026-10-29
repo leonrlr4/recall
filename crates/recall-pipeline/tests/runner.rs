@@ -213,7 +213,7 @@ async fn run_from_segment_reaches_write_with_fakes() {
         &f.dir,
         &mut speakers,
         Step::Segment,
-        |step, pct| progress.lock().unwrap().push((step, pct)),
+        |step, pct, done| progress.lock().unwrap().push((step, pct, done)),
     )
     .await
     .unwrap();
@@ -224,10 +224,25 @@ async fn run_from_segment_reaches_write_with_fakes() {
     }
     let progress = progress.into_inner().unwrap();
     assert_eq!(
-        progress.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+        progress
+            .iter()
+            .filter(|(_, _, done)| *done)
+            .map(|(s, _, _)| *s)
+            .collect::<Vec<_>>(),
         Step::ALL
     );
     assert!((progress.last().unwrap().1 - 1.0).abs() < 1e-6);
+    // Transcribe reports each side's piece before the step is done, within
+    // its own sixth of the run.
+    let pieces: Vec<f32> = progress
+        .iter()
+        .filter(|(s, _, done)| *s == Step::Transcribe && !*done)
+        .map(|(_, pct, _)| *pct)
+        .collect();
+    let n = Step::ALL.len() as f32;
+    assert_eq!(pieces.len(), 2);
+    assert!((pieces[0] - 1.5 / n).abs() < 1e-6, "{pieces:?}");
+    assert!((pieces[1] - 2.0 / n).abs() < 1e-6, "{pieces:?}");
 
     // One "hello" per side; the mic region survives the echo rule because
     // the two tones barely overlap.
@@ -271,7 +286,7 @@ async fn run_from_summarize_only_reruns_last_steps() {
         &f.dir,
         &mut speakers,
         Step::Segment,
-        |_, _| {},
+        |_, _, _| {},
     )
     .await
     .unwrap();
@@ -284,7 +299,7 @@ async fn run_from_summarize_only_reruns_last_steps() {
         &f.dir,
         &mut speakers,
         Step::Summarize,
-        |step, pct| progress.lock().unwrap().push((step, pct)),
+        |step, pct, done| progress.lock().unwrap().push((step, pct, done)),
     )
     .await
     .unwrap();
@@ -306,7 +321,10 @@ async fn run_from_summarize_only_reruns_last_steps() {
     assert_eq!(second.segments, first.segments);
     assert_eq!(second.clusters, first.clusters);
     let progress = progress.into_inner().unwrap();
-    assert_eq!(progress, [(Step::Summarize, 5.0 / 6.0), (Step::Write, 1.0)]);
+    assert_eq!(
+        progress,
+        [(Step::Summarize, 5.0 / 6.0, true), (Step::Write, 1.0, true)]
+    );
 }
 
 #[tokio::test]
@@ -323,7 +341,7 @@ async fn summary_chunk_size_follows_context_tokens() {
         &f.dir,
         &mut Speakers::default(),
         Step::Segment,
-        |_, _| {},
+        |_, _, _| {},
     )
     .await
     .unwrap();
@@ -343,7 +361,7 @@ async fn failed_step_is_recorded_and_later_steps_stay_pending() {
         &f.dir,
         &mut speakers,
         Step::Segment,
-        |_, _| {},
+        |_, _, _| {},
     )
     .await
     .unwrap_err();
@@ -375,7 +393,7 @@ async fn mic_only_meeting_gives_every_line_to_me() {
         &f.dir,
         &mut speakers,
         Step::Segment,
-        |_, _| {},
+        |_, _, _| {},
     )
     .await
     .unwrap();
@@ -410,7 +428,7 @@ async fn silent_meeting_is_done_with_no_segments() {
         &f.dir,
         &mut speakers,
         Step::Segment,
-        |_, _| {},
+        |_, _, _| {},
     )
     .await
     .unwrap();
@@ -473,7 +491,7 @@ async fn run_name(f: &Fixture, speakers: &mut Speakers) {
         &f.dir,
         speakers,
         Step::Name,
-        |_, _| {},
+        |_, _, _| {},
     )
     .await
     .unwrap();
@@ -618,6 +636,6 @@ fn run_from_future_is_send(
     speakers: &mut Speakers,
 ) {
     fn assert_send<T: Send>(_: &T) {}
-    let future = run_from(engines, config, dir, speakers, Step::Segment, |_, _| {});
+    let future = run_from(engines, config, dir, speakers, Step::Segment, |_, _, _| {});
     assert_send(&future);
 }

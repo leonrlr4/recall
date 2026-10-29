@@ -255,7 +255,7 @@ fn job_runs_to_done_and_merges_new_speakers() {
     assert!(!worker.run_next(&runtime(), &mut engines).unwrap());
 
     let events = drain(&mut rx);
-    let steps: Vec<Step> = events
+    let mut steps: Vec<Step> = events
         .iter()
         .filter_map(|e| match e {
             Event::Progress { meeting, step, .. } => {
@@ -265,6 +265,9 @@ fn job_runs_to_done_and_merges_new_speakers() {
             _ => None,
         })
         .collect();
+    // Transcribe also reports each side's piece of the transcript.
+    assert_eq!(steps.iter().filter(|s| **s == Step::Transcribe).count(), 3);
+    steps.dedup();
     assert_eq!(steps, Step::ALL);
     assert!(
         matches!(events.last(), Some(Event::Done { meeting }) if meeting == &f.dir.id),

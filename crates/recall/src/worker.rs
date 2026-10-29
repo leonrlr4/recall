@@ -214,8 +214,10 @@ impl Worker {
                 &dir,
                 &mut speakers,
                 job.from_step,
-                |step, pct| {
-                    tracing::info!(id = meeting.0, ?step, pct, "step done");
+                |step, pct, done| {
+                    if done {
+                        tracing::info!(id = meeting.0, ?step, pct, "step done");
+                    }
                     let _ = events.send(Event::Progress {
                         meeting: meeting.clone(),
                         step,
