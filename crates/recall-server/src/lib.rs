@@ -30,6 +30,7 @@ use recall_store::{Config, Event, Index, MeetBatch, MeetingId, Speakers, Step};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+pub use meetings::save_renamed;
 pub use qa::QaState;
 
 /// What the recorder is doing right now, as `GET /api/status` reports it.

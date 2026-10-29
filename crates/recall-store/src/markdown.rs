@@ -106,13 +106,29 @@ fn write_frontmatter(out: &mut String, meeting: &Meeting, speakers: &Speakers) {
         .map_or_else(|| "null".to_string(), yaml_scalar);
     let _ = write!(
         out,
-        "---\ntitle: {}\ndate: {}\nduration: {}\nparticipants: [{}]\nsource_app: {}\ntags: []\n---\n",
+        "---\ntitle: {}\ndate: {}\nduration: {}\nparticipants: [{}]\nsource_app: {}\n",
         yaml_scalar(&meeting.title),
         meeting.started.to_rfc3339_opts(SecondsFormat::Secs, true),
         clock(meeting.duration_ms),
         participants.join(", "),
         source_app,
     );
+    // Names only: this file is what the vault sync publishes, and attendee
+    // emails stay in meeting.json.
+    if let Some(event) = &meeting.calendar {
+        let attendees: Vec<String> = event
+            .attendee_names()
+            .iter()
+            .map(|n| yaml_scalar(n))
+            .collect();
+        let _ = write!(
+            out,
+            "calendar_event: {}\nattendees: [{}]\n",
+            yaml_scalar(&flatten(&event.title)),
+            attendees.join(", "),
+        );
+    }
+    out.push_str("tags: []\n---\n");
 }
 
 /// An Obsidian Tasks line: `- [ ] text 👤 owner ⏫ 📅 2026-11-03`, and
@@ -227,7 +243,8 @@ fn yaml_scalar(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::meeting::{
-        ActionItem, Chapter, MeetingId, Priority, Segment, Side, SpeakerId, Summary,
+        ActionItem, Attendee, CalendarEvent, Chapter, MeetingId, Priority, Segment, Side,
+        SpeakerId, Summary,
     };
     use chrono::{TimeZone, Utc};
     use std::collections::BTreeMap;
@@ -305,6 +322,7 @@ mod tests {
             screen_offset_ms: None,
             screen_error: None,
             sync: false,
+            calendar: None,
         };
         (meeting, speakers)
     }
@@ -351,6 +369,36 @@ tags: []
 [01:36] **對方** 嗯
 ";
         assert_eq!(md, expected);
+    }
+
+    #[test]
+    fn frontmatter_has_the_calendar_event_and_attendee_names_but_no_emails() {
+        let (mut meeting, speakers) = sample();
+        let attendee = |name: &str, email: &str, is_self: bool| Attendee {
+            name: name.into(),
+            email: email.into(),
+            response: "accepted".into(),
+            is_self,
+        };
+        meeting.calendar = Some(CalendarEvent {
+            id: "ev1".into(),
+            title: "Weekly: release".into(),
+            attendees: vec![
+                attendee("Tom Lin", "tom@example.com", false),
+                attendee("Leon", "leon@example.com", true),
+                attendee("", "anon@example.com", false),
+                attendee("Lee, Ann", "ann@example.com", false),
+            ],
+        });
+        let md = render(&meeting, &speakers, "en");
+        assert!(
+            md.contains(
+                "source_app: Google Meet\ncalendar_event: \"Weekly: release\"\n\
+                 attendees: [Tom Lin, \"Lee, Ann\"]\ntags: []\n---\n"
+            ),
+            "{md}"
+        );
+        assert!(!md.contains('@'), "{md}");
     }
 
     #[test]

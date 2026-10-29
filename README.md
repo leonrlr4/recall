@@ -220,6 +220,11 @@ cwd = "~/Work"                         # ~ is expanded here; default: home direc
 # model = "opus"                       # unset: Claude Code's own default
 timeout_secs = 600
 
+[calendar]                             # titles and attendees from Google Calendar; see below
+enabled = false
+slack_minutes = 5
+timeout_secs = 120
+
 [stt]
 engine = "breeze"                      # the only engine; anything else is rejected
 threads = 8
@@ -335,6 +340,34 @@ keep the language they were spoken in), and every claim cites a meeting and a
 transcript time that the page links to. One question runs at a time, for at
 most `timeout_secs` or 300 s, whichever is shorter. With `[claude_code]` off,
 the page explains how to turn it on.
+
+### Meeting titles and attendees from Google Calendar
+
+With `[calendar] enabled = true`, the worker asks Claude Code (the `command`
+and `model` of `[claude_code]`, which itself may stay disabled) for the event
+on your Google Calendar at the meeting's start before the meeting is first
+processed. It needs the claude.ai Google Calendar connector connected in that
+Claude Code (`claude mcp list` shows it). Each lookup runs, in an empty
+temporary directory:
+
+```sh
+claude -p --output-format json --no-session-persistence --tools "" \
+  --permission-mode dontAsk --disable-slash-commands \
+  --allowedTools <list_events, search_events, get_event> \
+  --disallowedTools <create_event, update_event, delete_event, respond_to_event> \
+  [--model <model>] --append-system-prompt <instructions>
+```
+
+Of the timed events you have not declined that overlap the start, give or take
+`slack_minutes`, the one that overlaps the meeting longest wins. Its title,
+attendees (name, email, response) and id go into `meeting.json` as `calendar`;
+`meeting.md` gets `calendar_event` and the attendee names in its frontmatter,
+the names join `participants_hint` (offered when renaming a speaker), and the
+meeting page lists them under the title. A meeting still titled
+"Meeting HH:MM" takes the event's title, which renames its directory; a title
+you typed is kept. When the lookup is off, finds no event or fails (`claude`
+missing, connector not connected, timeout), the meeting is left as it is and
+the reason is logged.
 
 ## GPU transcription
 
@@ -482,6 +515,11 @@ page runs it that way.
   whatever files under `cwd` it reads while summarizing. A question on the Ask
   page sends Anthropic the transcripts and notes of the synced meetings Claude
   Code reads to answer it; meetings not marked for sync are never sent.
+- With `[calendar]` enabled, the meeting's start and end times go to
+  Anthropic through Claude Code, and the calendar events around them, with
+  their attendees, pass through Claude Code's connector to get there. recall
+  keeps attendee emails in `meeting.json` only; `meeting.md`, and so the vault,
+  carries names.
 - With `vault.remote` set, the notes of meetings you switch to "Publish to
   vault" are pushed to that repository, where everyone with access can read
   them and their history. Nothing else is pushed.

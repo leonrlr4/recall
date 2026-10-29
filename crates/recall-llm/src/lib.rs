@@ -15,7 +15,9 @@ use recall_store::LlmConfig;
 use tokio::sync::mpsc;
 
 pub use claude::Claude;
-pub use claude_code::{AgentEvent, CLAUDE_CODE_BUDGET_CHARS, ClaudeCode, McpAccess};
+pub use claude_code::{
+    AgentEvent, CLAUDE_CODE_BUDGET_CHARS, ClaudeCode, McpAccess, print as claude_print,
+};
 pub use http::Timeouts;
 pub use ollama::Ollama;
 pub use prompts::{

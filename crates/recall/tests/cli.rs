@@ -121,6 +121,7 @@ mod store {
             screen_offset_ms: None,
             screen_error: None,
             sync: false,
+            calendar: None,
         };
         meeting.save(&dir.path()).unwrap();
         std::fs::write(dir.audio(), b"opus").unwrap();

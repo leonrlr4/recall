@@ -169,6 +169,7 @@ fn fixture_with(source: &str) -> Fixture {
         screen_offset_ms: None,
         screen_error: None,
         sync: false,
+        calendar: None,
     };
     meeting.save(&dir.path()).unwrap();
     Fixture {

@@ -729,6 +729,7 @@ fn keep(
         screen_offset_ms,
         screen_error,
         sync: false,
+        calendar: None,
     };
     meeting.save(&dir.path())?;
     queue(&meeting)?;

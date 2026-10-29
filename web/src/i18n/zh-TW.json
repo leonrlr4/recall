@@ -103,6 +103,7 @@
     "save_failed": "無法儲存：{error}",
     "load_failed": "無法載入這場會議：{error}",
     "screen_error": "螢幕錄影失敗：{error}",
+    "attendees": "與會者：{names}",
     "delete_confirm_vault": "要刪除「{title}」以及它的錄音和逐字稿嗎？它在團隊 vault 的筆記也會移除，但仍留在 vault 的 git 歷史裡。刪除後無法復原。"
   },
   "todo": {

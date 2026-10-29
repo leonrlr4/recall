@@ -84,6 +84,24 @@ export interface Meeting {
   screen_error?: string;
   /** Publish to the shared vault; absent means off. */
   sync?: boolean;
+  /** The calendar event at the meeting's start, when the lookup found one. */
+  calendar?: CalendarEvent;
+}
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  attendees: Attendee[];
+}
+
+export interface Attendee {
+  /** Empty when the calendar has no display name. */
+  name: string;
+  email: string;
+  /** `accepted`, `declined`, `tentative` or `needsAction`. */
+  response: string;
+  /** The calendar's owner, i.e. the user. */
+  self?: boolean;
 }
 
 /** Where a meeting stands with the shared vault. */

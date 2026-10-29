@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
+use std::sync::Mutex;
 
 use anyhow::Context;
 use axum::Json;
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error::{ApiError, ApiResult};
-use crate::{AppState, SyncWhen, VaultStatus};
+use crate::{AppState, SyncWhen, Vault, VaultStatus};
 
 /// Most transcript hits a search returns.
 const SEARCH_LIMIT: usize = 100;
@@ -368,36 +369,19 @@ pub async fn patch(
         meeting.segments.remove(i);
     }
 
-    // Save before renaming, so a failed rename loses no edits. A rename
-    // then saves again to record the new id.
-    let old_id = dir.id.clone();
-    if let Some(title) = title {
-        meeting.title = title;
-    }
     if let Some(sync) = body.sync {
         meeting.sync = sync;
     }
-    meeting.save(&dir.path())?;
-    let dir = if body.title.is_some() {
-        let title = meeting.title.clone();
-        let dir = dir.rename(&title)?;
-        if dir.id != old_id {
-            meeting.id = dir.id.clone();
-            meeting.save(&dir.path())?;
-        }
-        dir
-    } else {
-        dir
-    };
-    let index = state.index.lock().expect("index lock poisoned");
-    if old_id != dir.id {
-        index.remove(&old_id)?;
-    }
-    refresh(&state.config, &index, &speakers, &meeting, &dir)?;
+    let dir = save_renamed(
+        &state.config,
+        &state.index,
+        &speakers,
+        state.vault.as_deref(),
+        dir,
+        &mut meeting,
+        title,
+    )?;
     if let Some(vault) = &state.vault {
-        if old_id != dir.id {
-            vault.renamed(&old_id, &dir.id);
-        }
         if body.sync.is_some() {
             // A request left from a job that has ended would otherwise be
             // applied over this newer choice.
@@ -408,6 +392,54 @@ pub async fn patch(
         }
     }
     Ok(Json(meeting))
+}
+
+/// Saves `meeting` in `dir`; with a `title`, sets it, renames the directory
+/// to match and saves again with the new id. Then rewrites `meeting.md` and
+/// the index row and tells the vault sync about a move. Returns the
+/// directory, moved or not.
+///
+/// The caller holds the `speakers` lock (`speakers` is the guarded
+/// registry) and has made sure no job saves `meeting.json` meanwhile. The
+/// PATCH handler and the worker's calendar lookup both rename through this.
+pub fn save_renamed(
+    config: &Config,
+    index: &Mutex<Index>,
+    speakers: &Speakers,
+    vault: Option<&dyn Vault>,
+    dir: MeetingDir,
+    meeting: &mut Meeting,
+    title: Option<String>,
+) -> anyhow::Result<MeetingDir> {
+    // Save before renaming, so a failed rename loses no edits. A rename
+    // then saves again to record the new id.
+    let old_id = dir.id.clone();
+    let renaming = title.is_some();
+    if let Some(title) = title {
+        meeting.title = title;
+    }
+    meeting.save(&dir.path())?;
+    let dir = if renaming {
+        let dir = dir.rename(&meeting.title)?;
+        if dir.id != old_id {
+            meeting.id = dir.id.clone();
+            meeting.save(&dir.path())?;
+        }
+        dir
+    } else {
+        dir
+    };
+    let index = index.lock().expect("index lock poisoned");
+    if old_id != dir.id {
+        index.remove(&old_id)?;
+    }
+    refresh(config, &index, speakers, meeting, &dir)?;
+    if let Some(vault) = vault
+        && old_id != dir.id
+    {
+        vault.renamed(&old_id, &dir.id);
+    }
+    Ok(dir)
 }
 
 /// Removes the meeting's directory, audio included, and its index row. A

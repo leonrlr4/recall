@@ -3,7 +3,7 @@
 //! notes there.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -315,8 +315,8 @@ impl ClaudeCode {
 
     /// Runs one call and returns its stdout, killing the run (and anything
     /// it started) when it outlasts the timeout.
-    async fn run(&self, system: &str, user: &str) -> Result<Vec<u8>> {
-        let mut child = self.spawn(self.args(system))?;
+    async fn run(&self, args: Vec<String>, user: &str) -> Result<Vec<u8>> {
+        let mut child = self.spawn(args)?;
         let pid = child.id();
         let mut stdin = child.stdin.take().expect("stdin is piped");
         let mut stdout = child.stdout.take().expect("stdout is piped");
@@ -454,14 +454,14 @@ fn main_model(usage: &BTreeMap<String, Value>) -> Option<String> {
         .map(|(model, _)| model.clone())
 }
 
-#[async_trait]
-impl Llm for ClaudeCode {
-    async fn complete(&self, system: &str, user: &str) -> Result<String> {
-        let stdout = self.run(system, user).await?;
-        let reply: PrintResult = serde_json::from_slice(&stdout).with_context(|| {
+impl ClaudeCode {
+    /// The `result` text of a print-mode JSON reply in `stdout`, noting the
+    /// model it reports for [`Llm::name`].
+    fn result(&self, stdout: &[u8]) -> Result<String> {
+        let reply: PrintResult = serde_json::from_slice(stdout).with_context(|| {
             format!(
                 "Claude Code output is not a JSON result: {}",
-                quote(&String::from_utf8_lossy(&stdout))
+                quote(&String::from_utf8_lossy(stdout))
             )
         })?;
         if reply.is_error {
@@ -475,6 +475,31 @@ impl Llm for ClaudeCode {
             *self.replied_model.lock().expect("not poisoned") = Some(model);
         }
         Ok(reply.result)
+    }
+}
+
+/// Runs `command` in print mode with `args` in `cwd`, writes `input` to its
+/// stdin and returns the `result` text of its JSON output, with the same
+/// process group, timeout and kill as a summary. `args` must ask for
+/// `--output-format json`. The calendar lookup uses it with its own
+/// arguments, and so its own tool limits.
+pub async fn print(
+    command: &str,
+    cwd: &Path,
+    args: &[String],
+    input: &str,
+    timeout: Duration,
+) -> Result<String> {
+    let cc = ClaudeCode::new(command, cwd.to_path_buf(), None, timeout);
+    let stdout = cc.run(args.to_vec(), input).await?;
+    cc.result(&stdout)
+}
+
+#[async_trait]
+impl Llm for ClaudeCode {
+    async fn complete(&self, system: &str, user: &str) -> Result<String> {
+        let stdout = self.run(self.args(system), user).await?;
+        self.result(&stdout)
     }
 
     /// Sends the whole reply as one piece once the run ends: print mode's

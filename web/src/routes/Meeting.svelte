@@ -52,6 +52,12 @@
 
   const meeting = $derived(detail?.meeting ?? null);
   const segments = $derived(meeting?.segments ?? []);
+  /** The calendar attendees other than the user who have not declined. */
+  const attendees = $derived(
+    (meeting?.calendar?.attendees ?? [])
+      .filter((a) => !a.self && a.response !== 'declined')
+      .map((a) => a.name || a.email),
+  );
 
   /** Numbers loads; an answer older than the latest request is dropped. */
   let loadSeq = 0;
@@ -443,6 +449,11 @@
         {/if}
         <StateChip state={meetingState} pct={progress?.pct ?? null} />
       </div>
+      {#if attendees.length}
+        <p class="attendees" title={meeting.calendar?.title}>
+          {t('meeting.attendees', { names: attendees.join(', ') })}
+        </p>
+      {/if}
       <div class="meta">
         <span>{started}</span>
         <span aria-hidden="true">·</span>
@@ -636,6 +647,12 @@
     height: 40px;
     font-size: 20px;
     font-weight: 600;
+  }
+
+  .attendees {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--text-2);
   }
 
   .meta {

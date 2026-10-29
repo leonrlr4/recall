@@ -28,6 +28,7 @@ pub struct Config {
     pub glossary: GlossaryConfig,
     pub claude_code: ClaudeCodeConfig,
     pub vault: VaultConfig,
+    pub calendar: CalendarConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -91,6 +92,20 @@ pub struct GlossaryConfig {
     pub refresh_days: u64,
 }
 
+/// Meeting titles and attendees from the user's Google Calendar, read
+/// through the Google Calendar connector of the Claude Code that
+/// `claude_code.command` names (which needs no `claude_code.enabled`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CalendarConfig {
+    pub enabled: bool,
+    /// How far an event may start after, or end before, the meeting's start
+    /// and still match it.
+    pub slack_minutes: u32,
+    /// The lookup is killed, and the meeting left as it is, after this.
+    pub timeout_secs: u64,
+}
+
 /// Where chosen meetings are published: a git repository holding an Obsidian
 /// vault that teammates read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -135,6 +150,7 @@ impl Default for Config {
             glossary: GlossaryConfig::default(),
             claude_code: ClaudeCodeConfig::default(),
             vault: VaultConfig::default(),
+            calendar: CalendarConfig::default(),
         }
     }
 }
@@ -178,6 +194,16 @@ impl ClaudeCodeConfig {
         match self.cwd.strip_prefix("~") {
             Ok(rest) => home().join(rest),
             Err(_) => self.cwd.clone(),
+        }
+    }
+}
+
+impl Default for CalendarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            slack_minutes: 5,
+            timeout_secs: 120,
         }
     }
 }
@@ -373,6 +399,9 @@ mod tests {
         assert_eq!(config.claude_code.command, "claude");
         assert_eq!(config.claude_code.model, None);
         assert_eq!(config.claude_code.timeout_secs, 600);
+        assert!(!config.calendar.enabled);
+        assert_eq!(config.calendar.slack_minutes, 5);
+        assert_eq!(config.calendar.timeout_secs, 120);
     }
 
     #[test]

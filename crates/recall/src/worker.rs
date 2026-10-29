@@ -24,12 +24,13 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use recall_pipeline::runner::{Engines, MAX_VOICES, run_from};
+use recall_server::Vault;
 use recall_store::{
     Config, Event, Index, Job, Meeting, MeetingDir, MeetingId, Speakers, Step, StepState,
 };
 use tokio::sync::broadcast;
 
-use crate::notify;
+use crate::{calendar, notify};
 
 /// How long the worker sleeps without a wake before looking at the queue
 /// again. Every enqueue in the daemon sends a wake, so this only matters for
@@ -68,6 +69,9 @@ pub struct Worker {
     pub load: LoadEngines,
     /// Desktop notifications for finished and failed jobs; off in tests.
     pub notifications: bool,
+    /// Told when the calendar lookup renames a meeting; `None` when
+    /// publishing is off.
+    pub vault: Option<Arc<dyn Vault>>,
 }
 
 impl Worker {
@@ -121,37 +125,42 @@ impl Worker {
         };
         tracing::info!(id = job.meeting.0, from = ?job.from_step, job = job.id, "processing");
         let outcome = self.process(runtime, engines, &job);
-        let title = outcome.title.clone();
+        // Before the job is finished, so no edit through the API can come
+        // between the run's last save and this one. A new title moves the
+        // meeting, and everything below goes by its new id.
+        let (id, new_title) = calendar::apply(
+            &self.config,
+            &self.index,
+            &self.speakers,
+            self.vault.as_deref(),
+            &job.meeting,
+        );
+        let title = new_title.unwrap_or(outcome.title);
         match outcome.result {
             Ok(()) => {
                 lock(&self.index).finish_job(job.id, true, None)?;
-                tracing::info!(id = job.meeting.0, "processed");
+                tracing::info!(id = id.0, "processed");
                 let _ = self.events.send(Event::Done {
-                    meeting: job.meeting.clone(),
+                    meeting: id.clone(),
                 });
                 if self.notifications {
-                    notify::summary_ready(&job.meeting.0, &title, self.config.port);
+                    notify::summary_ready(&id.0, &title, self.config.port);
                 }
             }
             Err((step, err)) => {
                 // The failed step is in meeting.json, but only the Write
                 // step updates the index row.
-                self.refresh_row(&job.meeting);
+                self.refresh_row(&id);
                 let error = format!("{err:#}");
                 lock(&self.index).finish_job(job.id, false, Some(&error))?;
-                tracing::error!(id = job.meeting.0, ?step, err = error, "processing failed");
+                tracing::error!(id = id.0, ?step, err = error, "processing failed");
                 let _ = self.events.send(Event::Failed {
-                    meeting: job.meeting.clone(),
+                    meeting: id.clone(),
                     step,
                     error,
                 });
                 if self.notifications {
-                    notify::processing_failed(
-                        &job.meeting.0,
-                        &title,
-                        &step_name(step),
-                        self.config.port,
-                    );
+                    notify::processing_failed(&id.0, &title, &step_name(step), self.config.port);
                 }
             }
         }
@@ -178,6 +187,7 @@ impl Worker {
         if let Ok(meeting) = Meeting::load(&dir.path()) {
             outcome.title = meeting.title;
         }
+        calendar::attach(&self.config, &self.speakers, &dir, runtime);
         if engines.is_none() {
             tracing::info!("loading the models");
             // A panic in a model loader (a native library rejecting a

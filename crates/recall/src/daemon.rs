@@ -110,6 +110,8 @@ pub async fn run(config: Config) -> Result<()> {
     let live = Arc::new(LiveSlot::default());
     let (events, _) = broadcast::channel(EVENT_BUFFER);
     let (wake, woken) = mpsc::channel();
+    // Before the worker, which tells it about the meetings it renames.
+    let vault = start_vault(&config, &speakers, &index, &events);
     // Detached; see the module docs.
     Worker {
         config: config.clone(),
@@ -118,6 +120,7 @@ pub async fn run(config: Config) -> Result<()> {
         events: events.clone(),
         load: load_real_engines(),
         notifications: true,
+        vault: vault.clone(),
     }
     .spawn(woken)?;
     if config.claude_code.enabled && config.glossary.refresh_days > 0 {
@@ -162,7 +165,6 @@ pub async fn run(config: Config) -> Result<()> {
             .context("spawning the recorder thread")?
     };
 
-    let vault = start_vault(&config, &speakers, &index, &events);
     let state = AppState {
         config: config.clone(),
         config_path: Config::path(),
